@@ -4,6 +4,8 @@
 
 # The Lobby
 
+> Fork of [Lilykos/orca-the-lobby](https://github.com/Lilykos/orca-the-lobby) with Mexican agent names, `MR.Boss` for orchestration coordinators, and hidden Orca projects filtered out.
+
 **Every agent in every worktree, in one live view. Find who needs you, review finished results locally, and keep the pixel-art Office in view.**
 
 An [Orca](https://onorca.dev) plugin with four views: Attention, Office, Activity and Settings. The Office stays true to its pixel-art roots: one room per project, one desk per agent.
