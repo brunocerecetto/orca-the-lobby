@@ -14,6 +14,7 @@ cli.changes = async () => ({ files: 2, added: 12, removed: 3 })
 cli.repos = async () => null
 let inbox: Awaited<ReturnType<typeof cli.inbox>> = null
 cli.inbox = async () => inbox
+cli.workers = async () => null
 // Terminals the pretend Orca has open, and what was typed or switched to in them.
 let terminals: { handle: string; paneKey: string }[] | null = []
 const typed: string[] = []

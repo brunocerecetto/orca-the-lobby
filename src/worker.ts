@@ -418,10 +418,13 @@ export default function activate(orca: OrcaWorkerApi): void {
     looking = true
     lookedAt = Date.now()
     const inboxWanted = office.agents.size === 0 || hasCoordinator([...office.agents.values()])
-    const [worktrees, inbox] = await Promise.all([
+    const [worktrees, mail] = await Promise.all([
       cli.roster().catch(() => null),
-      inboxWanted ? cli.inbox().catch(() => null) : null
+      inboxWanted
+        ? Promise.all([cli.inbox().catch(() => null), cli.workers().catch(() => null), cli.terminals().catch(() => null)])
+        : null
     ])
+    const [inbox, workers, terminalRows] = mail ?? [null, null, null]
     if (stopped) return
     if (worktrees) {
       rosterObserved = true
@@ -446,7 +449,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     else office.rostered = false
     const listedAgents = [...office.agents.values()]
-    office.orchestration = hasCoordinator(listedAgents) ? orchestrationFacts(inbox, listedAgents) : new Map()
+    office.orchestration = hasCoordinator(listedAgents) ? orchestrationFacts(inbox, listedAgents, { workers: workers ?? [], terminals: terminalRows ?? [] }) : new Map()
     await enrich().catch((error) => orca.log(`enrich: ${error}`))
     looking = false
     if (stopped) return
