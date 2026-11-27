@@ -21,6 +21,7 @@ import {
   startAttentionTracking,
   storable,
   forPanel,
+  hiddenView,
   STORE_BYTES
 } from './office'
 import { readPrefs, workspaceContext } from './protocol'
@@ -973,4 +974,43 @@ test('refuses a payload that cannot fit without changing required identity keys'
   const agent = state.agents[0]
   const impossible = { ...state, agents: Array.from({ length: 2 }, (_, i) => ({ ...agent, id: `required-${i}-${'x'.repeat(100)}`, paneKey: `pane-${i}-${'y'.repeat(100)}` })) }
   assert.throws(() => storable(impossible, 50), /cannot fit.*without trimming identity data/i)
+})
+
+test('the panel leaves out hidden workspaces, their agents and rooms with nothing visible left', () => {
+  const office = createOffice()
+  const listed = (terminalId: string) => ({ terminalId, title: terminalId, agent: 'claude', state: 'working' as const, stateStartedAt: 1 })
+  applyListed(office, '/a/one', [listed('t1')], 10)
+  applyListed(office, '/a/two', [listed('t2')], 10)
+  applyListed(office, '/b/one', [listed('t3')], 10)
+  placeWorkspace(office, '/a/one', '/a')
+  placeWorkspace(office, '/a/two', '/a')
+  placeWorkspace(office, '/b/one', '/b')
+  for (const path of ['/a/one', '/a/two', '/b/one']) office.workspaces.set(path, path)
+  office.hidden = new Set(['/a/one', '/b/one'])
+  const panel = forPanel(snapshot(office), [], hiddenView(office))
+  assert.deepEqual(panel.agents.map((agent) => agent.id), ['t2'])
+  assert.deepEqual(Object.keys(panel.workspaces), ['/a/two'])
+  assert.deepEqual(Object.keys(panel.projects), ['/a'])
+  assert.equal(forPanel(snapshot(office)).agents.length, 3)
+})
+
+test('hidden workspaces are never stored', () => {
+  const office = createOffice()
+  applyRoster(office, [{ path: '/a/one', agents: [{ paneKey: 'p1', state: 'working' }] }], 1000)
+  office.hidden = new Set(['/a/one'])
+  const stored = storable(snapshot(office))
+  assert.equal(stored.agents.length, 1)
+  assert.ok(!('hidden' in stored))
+})
+
+test('orchestration facts reach the panel but are never stored', () => {
+  const office = createOffice()
+  applyRoster(office, [{ path: '/a/one', agents: [{ paneKey: 'p1', state: 'working' }] }], 1000)
+  const id = snapshot(office).agents[0].id
+  office.orchestration.set(id, { pendingQuestion: true, questionSince: 5, unreadMail: 2, mailSince: 6 })
+  const live = snapshot(office)
+  assert.equal(forPanel(live).agents[0].pendingQuestion, true)
+  assert.equal(forPanel(live).agents[0].unreadMail, 2)
+  const stored = storable(live).agents[0]
+  assert.ok(!('pendingQuestion' in stored) && !('unreadMail' in stored) && !('questionSince' in stored) && !('mailSince' in stored))
 })

@@ -12,6 +12,8 @@ let listed: RosterWorktree[] | null = null
 cli.roster = async () => listed
 cli.changes = async () => ({ files: 2, added: 12, removed: 3 })
 cli.repos = async () => null
+let inbox: Awaited<ReturnType<typeof cli.inbox>> = null
+cli.inbox = async () => inbox
 // Terminals the pretend Orca has open, and what was typed or switched to in them.
 let terminals: { handle: string; paneKey: string }[] | null = []
 const typed: string[] = []
@@ -2384,5 +2386,100 @@ test('the shortcuts start from the selected agent and keep one order for a whole
       listed = null
       terminals = []
     }
+  }
+})
+
+test('leaves out agents in a hidden Orca project, and a project.list that fails hides nothing', async () => {
+  const row = (id: string, path: string, projectId: string) =>
+    ({ id, kind: 'worktree', name: id, path, branch: 'main', hostId: null, projectId })
+  const results = (projects: unknown) => ({
+    'workspace.list': { workspaces: [row('w1', '/repos/shop', 'p1'), row('w2', '/repos/blog', 'p2')], truncated: false },
+    ...(projects ? { 'project.list': projects } : {})
+  })
+  const run = async (projects: unknown): Promise<string[]> => {
+    const worker = await mountWorker(main, { host: mockHost({ results: results(projects) as never }) })
+    try {
+      for (const [paneKey, path] of [['pane-1', '/repos/shop'], ['pane-2', '/repos/blog']])
+        await worker.emit('agent.status.changed', { workspaceId: `x::${path}`, paneKey, terminalId: paneKey, title: paneKey, state: 'working', receivedAt: Date.now() })
+      let ids: string[] = []
+      await waitUntil('workspaces named', async () => {
+        const state = await worker.request('office.snapshot')
+        ids = state.agents.map((agent) => agent.id).sort()
+        return Object.keys(state.workspaces).length > 0 && (projects === null || ids.length < 2)
+      })
+      return ids
+    } finally {
+      await worker.deactivate()
+    }
+  }
+  const hidden = { projects: [{ id: 'p1', name: 'shop', kind: 'git', hostId: 'local', path: '/repos/shop', hidden: true }, { id: 'p2', name: 'blog', kind: 'git', hostId: 'local', path: '/repos/blog' }], truncated: false }
+  assert.deepEqual(await run(hidden), ['pane-2'])
+  assert.deepEqual(await run(null), ['pane-1', 'pane-2'])
+})
+
+test('the inbox facts reach the panel snapshot, and a failing inbox clears them', async () => {
+  listed = [{ path: '/orch', agents: [
+    { paneKey: 'boss-pane', state: 'working' },
+    { paneKey: 'w-pane', state: 'working', parentPaneKey: 'boss-pane' }
+  ] }]
+  const mail = (over: Record<string, unknown>) =>
+    ({ id: 'm1', type: 'status', to_handle: 'run:r1', run_id: 'r1', created_at: 4000, thread_id: null, read: 0, sender_pane_key: 'w-pane', ...over })
+  inbox = [mail({ id: 'q1', type: 'question' }) as never, mail({ id: 'm2' }) as never]
+  const worker = await mountWorker(main, { host: mockHost() })
+  try {
+    await waitUntil('facts in the snapshot', async () => (await worker.request('office.snapshot')).agents.some((agent) => agent.pendingQuestion))
+    const agents = (await worker.request('office.snapshot')).agents
+    assert.equal(agents.find((agent) => agent.paneKey === 'w-pane')?.pendingQuestion, true)
+    assert.equal(agents.find((agent) => agent.paneKey === 'boss-pane')?.mailSince, 4000)
+    inbox = null
+    await waitUntil('facts cleared', async () => (await worker.request('office.snapshot')).agents.every((agent) => !agent.pendingQuestion && !agent.unreadMail))
+  } finally {
+    await worker.deactivate()
+    listed = null
+    inbox = null
+  }
+})
+
+test('the inbox is asked once for an empty office, then not while nobody listed leads anyone', async () => {
+  listed = [{ path: '/solo', agents: [{ paneKey: 'p1', state: 'working' }, { paneKey: 'p2', state: 'working' }] }]
+  let asked = 0
+  const original = cli.inbox
+  cli.inbox = async () => (asked++, inbox)
+  const worker = await mountWorker(main, { host: mockHost() })
+  try {
+    await waitUntil('agents listed', async () => (await worker.request('office.snapshot')).agents.length === 2)
+    await new Promise((resolve) => setTimeout(resolve, 3500))
+    assert.equal(asked, 1)
+  } finally {
+    await worker.deactivate()
+    cli.inbox = original
+    listed = null
+  }
+})
+
+test('a project hidden in a later project.list poll leaves the panel and returns when unhidden', async () => {
+  const project = (hidden: boolean) => ({ projects: [
+    { id: 'p1', name: 'shop', kind: 'git', hostId: 'local', path: '/repos/shop', hidden },
+    { id: 'p2', name: 'blog', kind: 'git', hostId: 'local', path: '/repos/blog' }
+  ], truncated: false })
+  const row = (id: string, path: string, projectId: string) =>
+    ({ id, kind: 'worktree', name: id, path, branch: 'main', hostId: null, projectId })
+  let current = project(false)
+  const results = {
+    'workspace.list': { workspaces: [row('w1', '/repos/shop', 'p1'), row('w2', '/repos/blog', 'p2')], truncated: false },
+    'project.list': () => current
+  }
+  const worker = await mountWorker(main, { host: mockHost({ results: results as never }) })
+  const ids = async (): Promise<string[]> => (await worker.request('office.snapshot')).agents.map((agent) => agent.id).sort()
+  try {
+    for (const [paneKey, path] of [['pane-1', '/repos/shop'], ['pane-2', '/repos/blog']])
+      await worker.emit('agent.status.changed', { workspaceId: `x::${path}`, paneKey, terminalId: paneKey, title: paneKey, state: 'working', receivedAt: Date.now() })
+    await waitUntil('both shown', async () => (await ids()).length === 2)
+    current = project(true)
+    await waitUntil('shop hidden', async () => (await ids()).length === 1)
+    current = project(false)
+    await waitUntil('shop back', async () => (await ids()).length === 2)
+  } finally {
+    await worker.deactivate()
   }
 })

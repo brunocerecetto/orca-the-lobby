@@ -3,6 +3,7 @@
 import type { Activity, AgentView, OfficeSnapshot } from '../src/protocol'
 import type { PaletteChoice } from '../src/protocol'
 import { overdue } from '../src/protocol'
+import { BOSS_NAME } from './names'
 import { PALETTES } from './palettes'
 
 type Pose = 'idle' | 'type' | 'read' | 'hand' | 'cup'
@@ -24,8 +25,14 @@ export type Room = {
   /** Folded to its sign by the person. */
   collapsed: boolean
   agents: AgentView[]
-  /** Non-finished agents, in their permanent desk order. */
+  /** Non-finished agents other than the boss, in their permanent desk order. */
   seated: AgentView[]
+  /** Non-finished MR.Boss agents; each has the spot of the same index in `bossDesks`. */
+  bosses: AgentView[]
+  /** The bosses' own desks, in a strip below the workers' rows; empty without a boss. */
+  bossDesks: Point[]
+  /** Where the partition between the worker rows and the boss strip is drawn, or null without a boss. */
+  bossRail: number | null
   /** Friendly display name for each agent in `agents`. */
   labels: string[]
   desks: Point[]
@@ -33,6 +40,8 @@ export type Room = {
   seed: number
   furniture: WallFixture[]
   decorations: Decoration[]
+  /** Potted plants: by the door, by the boss corner and between desks; clear of every seat and walking route. */
+  plants: Decoration[]
 }
 
 export type Actor = Point &
@@ -155,35 +164,20 @@ const LINGER_MS = 4000
 const COFFEE = 4
 const WINDOW_WIDTH = 28
 const COFFEE_WIDTH = 18
-/** Wall and wainscot, and floor and seam, for the rooms to differ by; index 0 of each is the plain one. */
-const WALLS = {
-  night: [
-    ['#3d4460', '#333952'],
-    ['#35504f', '#2c4443'],
-    ['#4a3d5c', '#3e3350'],
-    ['#454a55', '#3a3f49'],
-    ['#56403f', '#493635']
-  ],
-  day: [
-    ['#efe9dc', '#e2dac8'],
-    ['#dfeadf', '#cfdccf'],
-    ['#dfe8f0', '#cdd9e4'],
-    ['#f1e1dc', '#e5d1cb'],
-    ['#f3ecc9', '#e6deb6']
-  ]
-}
-const FLOORS = {
-  night: [
-    ['#65545d', '#56464f'],
-    ['#555b69', '#484e5c'],
-    ['#4d6074', '#40546a']
-  ],
-  day: [
-    ['#e6cba3', '#d8b98f'],
-    ['#efebe3', '#ddd8ce'],
-    ['#d7e0e9', '#c3d0dd']
-  ]
-}
+/** Extra space between the workers' last row and the boss strip. */
+const BOSS_GAP = 10
+/** Planks: floor and seam. */
+const WOOD = { night: ['#6d513d', '#5a4232'], day: ['#c99a62', '#b3844f'] }
+/** The door in the wall: its left edge, size and the room the wall fixtures leave for it. */
+const DOOR = { left: 4, width: 10, height: 21 }
+const DOOR_SPACE = DOOR.left + DOOR.width + 2
+/** The door's bounds on the wall of a room whose floor starts at `floor`. */
+export const doorBox = (floor: number): { left: number; right: number; top: number; bottom: number } => ({
+  left: DOOR.left,
+  right: DOOR.left + DOOR.width,
+  top: floor - DOOR.height,
+  bottom: floor
+})
 const SKIN = ['#f6d3b3', '#eab88f', '#c98b5e', '#8e5c3e']
 const HAIR = ['#2c2a35', '#5b3a26', '#a8582a', '#e0b94f', '#9a9aa8', '#b8433f']
 const SHIRTS: Record<string, string> = {
@@ -206,7 +200,7 @@ function hash(text: string): number {
 
 export type WallFixture = { name: 'web' | 'coffee'; center: number; width: number; scale: number; left: number; right: number }
 
-export type DecorationName = 'plant' | 'noticeboard' | 'server' | 'bookshelf' | 'clock' | 'poster' | 'cooler' | 'cabinet'
+export type DecorationName = 'plant' | 'noticeboard' | 'server' | 'bookshelf' | 'clock' | 'poster' | 'cooler' | 'cabinet' | 'painting'
 export type Decoration = { name: DecorationName; left: number; top: number; width: number; height: number }
 
 const DECORATION_SPECS: Array<{ name: DecorationName; width: number; height: number }> = [
@@ -217,25 +211,76 @@ const DECORATION_SPECS: Array<{ name: DecorationName; width: number; height: num
   { name: 'clock', width: 10, height: 10 },
   { name: 'poster', width: 14, height: 12 },
   { name: 'cooler', width: 12, height: 16 },
-  { name: 'cabinet', width: 14, height: 20 }
+  { name: 'cabinet', width: 14, height: 20 },
+  { name: 'painting', width: 16, height: 12 }
 ]
 
-/** A few room-seeded accents in clear wall space; no decoration changes agent routing. */
-export function decorationsFor(width: number, floor: number, furniture: WallFixture[], seed: number): Decoration[] {
-  const gap = 3
-  const intersects = (a: { left: number; right: number; top: number; bottom: number }, b: { left: number; right: number; top: number; bottom: number }): boolean =>
-    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-  const fixtures = furniture.map((item) => ({
+type Box = { left: number; right: number; top: number; bottom: number }
+const intersect = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+
+/** The door and the wall fixtures as boxes on the wall; `besideDoor` keeps that much of the wall next to the door free. */
+const wallBoxes = (floor: number, furniture: WallFixture[], besideDoor = 0): Box[] => {
+  const frame = doorBox(floor)
+  return [{ left: frame.left - 2, right: frame.right + 2 + besideDoor, top: frame.top - 1, bottom: frame.bottom }, ...furniture.map((item) => ({
     left: item.left,
     right: item.right,
     top: floor + (item.name === 'web' ? -29 : -21),
     bottom: floor + (item.name === 'web' ? -7 : 0)
-  }))
-  const ordered = [...DECORATION_SPECS].sort((a, b) => hash(`${seed}:kind:${a.name}`) - hash(`${seed}:kind:${b.name}`))
+  }))]
+}
+
+const PLANT = { name: 'plant', width: 8, height: 15 } as const
+
+/** Plants by the door, by the first boss desk and in the gaps between desks of a row, never over a desk,
+ *  a seat, the door, a wall fixture or the paths people walk (`routeTo`). */
+export function plantsFor(width: number, floor: number, desks: Point[], bossDesks: Point[], furniture: WallFixture[], decorations: Decoration[], seed: number): Decoration[] {
+  const box = (item: Decoration, gap = 0): Box => ({ left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height })
+  const spots = [...desks, ...bossDesks]
+  const blocked: Box[] = [
+    ...wallBoxes(floor, furniture),
+    ...decorations.map((item) => box(item, 2)),
+    { left: 0, right: width, top: floor + 6, bottom: floor + 30 },
+    { left: DOOR.left, right: DOOR.left + DOOR.width, top: floor, bottom: floor + 30 },
+    ...spots.flatMap((desk) => [
+      { left: desk.x, right: desk.x + DESK_W, top: desk.y - 9, bottom: desk.y + 14 },
+      { left: desk.x + 3, right: desk.x + 13, top: floor + 6, bottom: desk.y + 5 }
+    ])
+  ]
+  const placed: Decoration[] = []
+  const tryPlace = (left: number, top: number): void => {
+    const plant: Decoration = { ...PLANT, left, top }
+    if (left < 0 || left + PLANT.width > width || blocked.some((other) => intersect(box(plant), other))) return
+    placed.push(plant)
+    blocked.push(box(plant, 1))
+  }
+  const doorRight = doorBox(floor).right
+  for (let left = doorRight + 3; left <= doorRight + 12 && !placed.length; left++) tryPlace(left, floor - PLANT.height)
+  const firstBoss = bossDesks[0]
+  if (firstBoss) {
+    const rowEnd = Math.max(...bossDesks.filter((desk) => desk.y === firstBoss.y).map((desk) => desk.x))
+    const before = placed.length
+    for (const left of [firstBoss.x - 10, rowEnd + DESK_W + 2]) if (placed.length === before) tryPlace(left, firstBoss.y - 3)
+  }
+  desks
+    .flatMap((desk, index) => desks[index + 1]?.y === desk.y ? [{ left: desk.x + DESK_W + 2, top: desk.y - 3, index }] : [])
+    .sort((a, b) => hash(`${seed}:plant:${a.index}`) - hash(`${seed}:plant:${b.index}`))
+    .slice(0, 2)
+    .forEach(({ left, top }) => tryPlace(left, top))
+  return placed
+}
+
+/** A few room-seeded accents in clear wall space; no decoration changes agent routing. */
+export function decorationsFor(width: number, floor: number, furniture: WallFixture[], seed: number): Decoration[] {
+  const gap = 3
+  const fixtures = wallBoxes(floor, furniture, PLANT.width + 3)
+  // The painting always hangs first, so the room keeps it whatever the seed picks after.
+  const ordered = [...DECORATION_SPECS].sort(
+    (a, b) => Number(b.name === 'painting') - Number(a.name === 'painting') || hash(`${seed}:kind:${a.name}`) - hash(`${seed}:kind:${b.name}`)
+  )
   const placed: Decoration[] = []
   for (const spec of ordered) {
     if (placed.length >= 4) break
-    const wallMounted = ['noticeboard', 'clock', 'poster'].includes(spec.name)
+    const wallMounted = ['noticeboard', 'clock', 'poster', 'painting'].includes(spec.name)
     const top = wallMounted ? floor - 27 : floor - spec.height
     const candidates = Array.from({ length: Math.max(0, width - spec.width - 6) }, (_, index) => index + 3)
       .sort((a, b) => {
@@ -245,8 +290,8 @@ export function decorationsFor(width: number, floor: number, furniture: WallFixt
       })
     const left = candidates.find((candidate) => {
       const bounds = { left: candidate, right: candidate + spec.width, top, bottom: top + spec.height }
-      return !fixtures.some((fixture) => intersects(bounds, fixture)) &&
-        !placed.some((item) => intersects(bounds, { left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height }))
+      return !fixtures.some((fixture) => intersect(bounds, fixture)) &&
+        !placed.some((item) => intersect(bounds, { left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height }))
     })
     if (left !== undefined) placed.push({ ...spec, left, top })
   }
@@ -261,8 +306,8 @@ export function wallFurniture(width: number): WallFixture[] {
   let centers: number[]
   let scale = 1
   if (width < 70) {
-    scale = Math.min(1, Math.max(0, (width - 2 - gap) / total))
-    let left = (width - total * scale - gap) / 2
+    scale = Math.min(1, Math.max(0, (width - 2 - gap - DOOR_SPACE) / total))
+    let left = DOOR_SPACE + (width - DOOR_SPACE - total * scale - gap) / 2
     centers = widths.map((fixtureWidth) => {
       const center = left + fixtureWidth * scale / 2
       left += fixtureWidth * scale + gap
@@ -316,22 +361,28 @@ const brush =
     ctx.fillRect(Math.round(x), Math.round(y), w, h)
   }
 
-/** The base colours with this room's own wall, floor and trim. */
-function dress(base: Palette, seed: number): Palette & { flooring: number } {
-  if (base.flavor !== 'orca') {
-    const variation = seed % 5
-    const floorVariation = (seed >>> 3) % 3
-    const wall = shade(base.wall, base.night ? (variation - 2) * 0.035 : (variation - 2) * 0.025)
-    const wallLow = shade(base.wallLow, base.night ? 0.08 : -0.04)
-    const floor = shade(base.floor, base.night ? (floorVariation - 1) * 0.08 : (floorVariation - 1) * 0.035)
-    const seam = shade(base.seam, base.night ? (floorVariation - 1) * 0.08 : -0.06)
-    return { ...base, wall, wallLow, trim: shade(wallLow, base.night ? -0.22 : -0.16), floor, seam, flooring: floorVariation }
+/** White walls and a wooden floor in every palette, each tinted toward the palette's own wall so night stays night. */
+function dress(base: Palette, seed: number): Palette {
+  const [plank, seam] = WOOD[base.night ? 'night' : 'day']
+  const tone = ((seed >>> 3) % 3 - 1) * (base.night ? 0.06 : 0.035)
+  const wall = base.night ? blend('#f4f5f9', base.wall, 0.55) : blend('#ffffff', base.wall, 0.12)
+  const wallLow = shade(wall, base.night ? -0.1 : -0.06)
+  const floor = blend(plank, base.wall, 0.1)
+  return {
+    ...base,
+    wall,
+    wallLow,
+    trim: shade(wallLow, base.night ? -0.28 : -0.16),
+    floor: shade(floor, tone),
+    seam: shade(blend(seam, base.wall, 0.1), tone)
   }
-  const time = base.night ? 'night' : 'day'
-  const [wall, wallLow] = WALLS[time][seed % WALLS[time].length]
-  const flooring = (seed >>> 3) % 3
-  const [floor, seam] = FLOORS[time][flooring]
-  return { ...base, wall, wallLow, trim: shade(wallLow, -0.28), floor, seam, flooring }
+}
+
+/** Dawn and sunset warm the room a little; the other hours leave it as the palette has it. */
+function warmed(colors: Palette, period: DayPeriod): Palette {
+  if (period !== 'dawn' && period !== 'sunset') return colors
+  const warm = (color: string): string => blend(color, '#ffb070', colors.night ? 0.06 : 0.1)
+  return { ...colors, wall: warm(colors.wall), wallLow: warm(colors.wallLow), floor: warm(colors.floor), seam: warm(colors.seam) }
 }
 
 export function lookOf(agent: AgentView): Look {
@@ -358,6 +409,25 @@ export function shown(agent: AgentView, now: number): Activity | null {
   if (running) return running
   const last = agent.recent[0]
   return last && now - (last.endedAt ?? 0) < LINGER_MS ? last : null
+}
+
+/** A strip of desks for the bosses under the workers' last row, behind a partition; `extra` is how much taller the room gets. */
+export function bossSpots(
+  count: number,
+  workWidth: number,
+  perRow: number,
+  lastRow: number,
+  pitch: number
+): { spots: Point[]; rail: number | null; extra: number } {
+  if (!count) return { spots: [], rail: null, extra: 0 }
+  const columns = Math.min(perRow, count)
+  const left = Math.floor((workWidth - ((columns - 1) * PITCH + DESK_W)) / 2)
+  const first = lastRow + pitch + BOSS_GAP
+  const spots = Array.from({ length: count }, (_, index) => ({
+    x: left + (index % perRow) * PITCH,
+    y: first + Math.floor(index / perRow) * pitch
+  }))
+  return { spots, rail: first - 31, extra: BOSS_GAP + Math.ceil(count / perRow) * pitch }
 }
 
 /** One room per project, with a persistent row of desks for its active agents. */
@@ -392,7 +462,10 @@ export function layout(
   const ids = [...byRoom.keys()].sort((a, b) => place(a) - place(b) || nameOf(a).localeCompare(nameOf(b)) || a.localeCompare(b))
   for (const id of ids) {
     const agents = byRoom.get(id) ?? []
-    const seated = agents.filter((agent) => agent.state !== 'done').sort((a, b) => a.id.localeCompare(b.id))
+    const active = agents.filter((agent) => agent.state !== 'done').sort((a, b) => a.id.localeCompare(b.id))
+    const isBoss = (agent: AgentView): boolean => displayNames?.get(agent.id) === BOSS_NAME
+    const seated = active.filter((agent) => !isBoss(agent))
+    const bosses = active.filter(isBoss)
     const collapsed = folded.get(id) ?? false
     const furniture = wallFurniture(width)
     const coffee = furniture.find((item) => item.name === 'coffee')!
@@ -408,12 +481,14 @@ export function layout(
       x: left + (index % perRow) * PITCH,
       y: floor + DESK_TOP + Math.floor(index / perRow) * pitch
     }))
+    const { spots: bossDesks, rail: bossRail, extra } = bossSpots(bosses.length, workWidth, perRow, desks.at(-1)!.y, pitch)
     const height = collapsed
       ? head
-      : head + WALL + DESK_TOP + (rows - 1) * pitch + 25
+      : head + WALL + DESK_TOP + (rows - 1) * pitch + 25 + extra
     const seed = hash(id || 'lobby')
     const labels = agents.map((agent) => displayNames?.get(agent.id) ?? agentName(snap, agent))
     const decorations = decorationsFor(width, floor, furniture, seed)
+    const plants = plantsFor(width, floor, desks, bossDesks, furniture, decorations, seed)
     rooms.push({
       id,
       name: nameOf(id),
@@ -424,11 +499,15 @@ export function layout(
       collapsed,
       agents,
       seated,
+      bosses,
+      bossDesks,
+      bossRail,
       labels,
       desks,
       seed,
       furniture,
-      decorations
+      decorations,
+      plants
     })
     top += height + GAP
   }
@@ -485,8 +564,11 @@ function wantedIn(room: Room, width: number, now: number): Wanted[] {
     .filter((agent) => agent.state === 'done')
     .sort((a, b) => a.id.localeCompare(b.id))
     .slice(0, COFFEE)
-  room.seated.forEach((agent, index) => {
-    const desk = room.desks[index]
+  const seats = [
+    ...room.seated.map((agent, index) => ({ agent, desk: room.desks[index] })),
+    ...room.bosses.map((agent, index) => ({ agent, desk: room.bossDesks[index] }))
+  ]
+  seats.forEach(({ agent, desk }) => {
     const base = {
       key: agent.id,
       agentId: agent.id,
@@ -797,6 +879,13 @@ function drawDecoration(rect: Rect, item: Decoration, colors: Palette, accent: s
     fill(0, 0, w, h, colors.frame); fill(1, 1, w - 2, h - 2, '#f7f0df')
     fill(2, 2, w - 4, 4, '#8ac3e8'); fill(2, 6, w - 4, h - 8, '#78a878')
     fill(3, 7, 4, 4, '#d7b36b'); fill(w - 6, 7, 2, h - 9, '#637755')
+  } else if (name === 'painting') {
+    // A gilt-framed landscape: sky, hills, a low sun.
+    fill(0, 0, w, h, '#a8803f'); fill(1, 1, w - 2, h - 2, '#6e5328')
+    fill(2, 2, w - 4, h - 4, colors.night ? '#6f86b8' : '#9ed0f0')
+    fill(w - 7, 3, 3, 3, '#ffe9a0')
+    fill(2, 7, w - 4, h - 9, '#5f9a62'); fill(2, 8, 6, 1, '#5f9a62'); fill(5, 6, 5, 2, '#5f9a62')
+    fill(2, h - 4, w - 4, 2, '#417a4d'); fill(9, h - 5, 2, 1, '#417a4d')
   } else if (name === 'cooler') {
     fill(2, 0, w - 4, 5, '#8acbe5'); fill(3, 1, w - 6, 3, '#c8edf7')
     fill(1, 5, w - 2, h - 5, '#d9dce5'); fill(2, 6, w - 4, h - 8, '#aab3c4')
@@ -814,7 +903,7 @@ function drawDecoration(rect: Rect, item: Decoration, colors: Palette, accent: s
   }
 }
 
-export type BubbleTone = 'need' | 'stuck' | 'failed' | 'done'
+export type BubbleTone = 'need' | 'stuck' | 'failed' | 'mail' | 'done'
 /** What one character says: `since` is when it started saying it. */
 export type Bubble = { text: string; tone: BubbleTone; since: number }
 export type PlacedBubble = Bubble & {
@@ -856,16 +945,18 @@ export function replyLine(reply: string | null): string {
   return ''
 }
 
-/** What an agent says over its head, if anything: needing you, then having gone quiet, then the
- *  start of its last reply for a short while after it finished. A person speaks once. */
+/** What an agent says over its head, if anything: needing you (blocked or with a question
+ *  unanswered), then a failure, having gone quiet, unread mail for a coordinator, and the start of its last reply for a short while after it finished. A person speaks once. */
 export function bubbleFor(agent: AgentView, now: number, stuckMinutes: number): Bubble | null {
   if (agent.state === 'blocked') return { text: 'Need you!', tone: 'need', since: agent.stateStartedAt }
+  if (agent.pendingQuestion) return { text: 'Need you!', tone: 'need', since: agent.questionSince ?? agent.stateStartedAt }
   const late = overdue(agent, now, stuckMinutes)
-  if (late?.kind === 'quiet') return { text: 'Stuck?', tone: 'stuck', since: late.since + stuckMinutes * 60_000 }
-  if (agent.state !== 'done') return null
   const since = agent.finishedAt ?? agent.stateStartedAt
-  if (!(now - since < BUBBLE_MS && since - now < BUBBLE_MS)) return null
-  if (agent.outcome === 'failure') return { text: 'Failed', tone: 'failed', since }
+  const fresh = agent.state === 'done' && now - since < BUBBLE_MS && since - now < BUBBLE_MS
+  if (fresh && agent.outcome === 'failure') return { text: 'Failed', tone: 'failed', since }
+  if (late?.kind === 'quiet') return { text: 'Stuck?', tone: 'stuck', since: late.since + stuckMinutes * 60_000 }
+  if (agent.unreadMail) return { text: 'Mail!', tone: 'mail', since: agent.mailSince ?? agent.stateStartedAt }
+  if (!fresh) return null
   const text = replyLine(agent.reply)
   return text ? { text, tone: 'done', since } : null
 }
@@ -914,7 +1005,7 @@ export function fitText(text: string, max: number, measure: (text: string) => nu
   return result
 }
 
-const BUBBLE_RANK: Record<BubbleTone, number> = { need: 0, stuck: 1, failed: 2, done: 3 }
+const BUBBLE_RANK: Record<BubbleTone, number> = { need: 0, failed: 1, stuck: 2, mail: 3, done: 4 }
 
 /** How tall a bubble is, in office pixels. */
 export const bubbleHeight = (scale: number): number => Math.ceil((BUBBLE_PX + 6) / scale)
@@ -986,6 +1077,7 @@ function bubbleColors(tone: BubbleTone): { fill: string; text: string } {
   if (tone === 'need') return { fill: '#ed823b', text: INK }
   if (tone === 'stuck') return { fill: '#f6c9a0', text: INK }
   if (tone === 'failed') return { fill: '#c93a3f', text: '#ffffff' }
+  if (tone === 'mail') return { fill: '#9ec9f2', text: INK }
   return { fill: '#fffdf4', text: INK }
 }
 
@@ -1042,7 +1134,7 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
   for (const room of view.rooms) {
     const { floor, top } = room
     const bottom = top + room.height
-    const colors = dress(view.colors, room.seed)
+    const colors = warmed(dress(view.colors, room.seed), view.period)
     const style = room.seed >>> 11
     const fixture = (name: WallFixture['name']): WallFixture | undefined =>
       room.furniture.find((item) => item.name === name)
@@ -1098,23 +1190,10 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
     rect(0, floor - 9, width, 9, colors.wallLow)
     rect(0, floor - 10, width, 1, colors.trim)
     rect(0, floor, width, bottom - floor, colors.floor)
-    if (colors.flooring === 0) {
-      // Floorboards.
-      for (let y = floor, board = 0; y < bottom; y += 7, board++) {
-        rect(0, y + 6, width, 1, colors.seam)
-        for (let x = (board * 13) % 29; x < width; x += 29) rect(x, y, 1, 6, colors.seam)
-      }
-    } else if (colors.flooring === 1) {
-      // Tiles.
-      for (let y = floor, row = 0; y < bottom; y += 9, row++) {
-        for (let x = row % 2 ? 9 : 0; x < width; x += 18)
-          rect(x, y, 9, Math.min(9, bottom - y), colors.seam)
-      }
-    } else {
-      // Carpet.
-      for (let y = floor + 2, row = 0; y < bottom; y += 3, row++) {
-        for (let x = (row * 7) % 11; x < width; x += 11) rect(x, y, 2, 1, colors.seam)
-      }
+    for (let y = floor, board = 0; y < bottom; y += 7, board++) {
+      if ((board + room.seed) % 3 === 0) rect(0, y, width, 6, shade(colors.floor, colors.night ? 0.05 : -0.035))
+      rect(0, y + 6, width, 1, colors.seam)
+      for (let x = (board * 13) % 29; x < width; x += 29) rect(x, y, 1, 6, colors.seam)
     }
     rect(0, floor - 2, width, 2, colors.trim)
     rect(0, floor, width, 2, colors.shadow)
@@ -1213,7 +1292,20 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
     ctx.restore()
 
     // Small seeded wall accents, placed only in bounds clear of the window and coffee corner.
-    for (const decoration of room.decorations) drawDecoration(rect, decoration, colors, theme.accent)
+    for (const decoration of [...room.decorations, ...room.plants]) drawDecoration(rect, decoration, colors, theme.accent)
+
+    // The door agents come in and leave by; it stands ajar while someone is at it.
+    const door = doorBox(floor)
+    const ajar = Boolean(view.motion) && actors.some((actor) => actor.moving && actor.x < door.right + 12)
+    const wood = colors.night ? '#7a5438' : '#a8764c'
+    rect(door.left - 1, door.top - 1, DOOR.width + 2, DOOR.height + 1, colors.trim)
+    rect(door.left, door.top, DOOR.width, DOOR.height, ajar ? (colors.night ? '#15131c' : '#4a3c33') : wood)
+    if (ajar) rect(door.left, door.top, 3, DOOR.height, wood)
+    else {
+      rect(door.left + 1, door.top + 2, 3, 7, shade(wood, -0.15)); rect(door.left + 6, door.top + 2, 3, 7, shade(wood, -0.15))
+      rect(door.left + 1, door.top + 11, 3, 8, shade(wood, -0.15)); rect(door.left + 6, door.top + 11, 3, 8, shade(wood, -0.15))
+      rect(door.left + 7, door.top + 10, 1, 2, '#e3c36a')
+    }
 
     // Whoever speaks has no thought icon: one thing over a head at a time.
     ctx.font = `600 ${BUBBLE_PX / scale}px system-ui, sans-serif`
@@ -1221,19 +1313,30 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
       ? placeBubbles(room, actors, view.bubbles, width, scale, (text) => ctx.measureText(text).width, ctx.font)
       : []
     talk.push(...spoken)
+    if (room.bossRail !== null) {
+      const rail = room.bossRail
+      rect(2, rail + 3, width - 4, 1, colors.shadow)
+      rect(2, rail, width - 4, 3, blend(colors.wall, '#9fd0e8', 0.45))
+      rect(2, rail, width - 4, 1, colors.metal)
+      for (let post = 2; post < width - 2; post += 34) rect(post, rail - 1, 2, 5, colors.metalDark)
+      rect(width - 4, rail - 1, 2, 5, colors.metalDark)
+    }
     type Item = { y: number; paint: () => void }
     const items: Item[] = []
     const over: (() => void)[] = []
-    room.desks.forEach((desk, index) => {
-      const owner = room.seated[index]
+    const spots = [
+      ...room.desks.map((desk, index) => ({ desk, index, owner: room.seated[index], boss: false })),
+      ...room.bossDesks.map((desk, index) => ({ desk, index: room.desks.length + index, owner: room.bosses[index], boss: true }))
+    ]
+    spots.forEach(({ desk, index, owner, boss }) => {
       const screenOn = Boolean(owner && owner.state === 'working')
       items.push({
         y: desk.y + 9,
         paint: () => {
           const occupied = owner && actors.some((actor) => actor.key === owner.id && actor.seated && !actor.moving)
           if (!occupied) {
-            rect(desk.x + 3, desk.y - 6, 10, 7, shade(colors.chair, -0.15))
-            rect(desk.x + 4, desk.y - 5, 8, 5, colors.chair)
+            rect(desk.x + 3, desk.y - 6, 10, 7, shade(colors.chair, boss ? -0.45 : -0.15))
+            rect(desk.x + 4, desk.y - 5, 8, 5, boss ? shade(colors.chair, -0.3) : colors.chair)
           }
           rect(desk.x + 1, desk.y + 12, DESK_W - 2, 2, colors.shadow)
           rect(desk.x + 1, desk.y + 10, 2, 3, colors.deskLeg)
@@ -1244,16 +1347,26 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
           rect(desk.x, desk.y + 9, DESK_W, 1, colors.deskLeg)
 
           // Compact terminal; it stays lit only for a working agent at this desk.
-          rect(desk.x + 13, desk.y - 9, 8, 8, '#1e212c')
-          rect(desk.x + 14, desk.y - 8, 6, 6, screenOn ? '#16324a' : '#2c3142')
-          if (screenOn) {
-            const lines = ['#7fd4a8', '#8fb8ff', '#f1c24b']
-            for (let line = 0; line < 3; line++) rect(desk.x + 15, desk.y - 7 + line * 2, 2 + ((line + index) % 3), 1, lines[line])
-          } else rect(desk.x + 15, desk.y - 7, 2, 1, '#454b61')
-          rect(desk.x + 17, desk.y - 1, 2, 2, colors.metalDark)
-          rect(desk.x + 15, desk.y + 1, 6, 1, colors.metalDark)
-          rect(desk.x + 2, desk.y + 2, 8, 2, colors.metal)
-          rect(desk.x + 2, desk.y + 2, 8, 1, shade(colors.metal, 0.25))
+          const lines = ['#7fd4a8', '#8fb8ff', '#f1c24b']
+          if (boss) {
+            // A laptop: the boss has no monitor, and a nameplate on the desk front.
+            rect(desk.x + 12, desk.y - 6, 9, 6, '#1e212c')
+            rect(desk.x + 13, desk.y - 5, 7, 4, screenOn ? '#16324a' : '#2c3142')
+            if (screenOn) for (let line = 0; line < 2; line++) rect(desk.x + 14, desk.y - 4 + line * 2, 3 + ((line + index) % 3), 1, lines[line])
+            rect(desk.x + 11, desk.y, 11, 2, colors.metal)
+            rect(desk.x + 11, desk.y, 11, 1, shade(colors.metal, 0.25))
+            rect(desk.x + 8, desk.y + 7, 6, 2, '#d9b45a')
+          } else {
+            rect(desk.x + 13, desk.y - 9, 8, 8, '#1e212c')
+            rect(desk.x + 14, desk.y - 8, 6, 6, screenOn ? '#16324a' : '#2c3142')
+            if (screenOn) {
+              for (let line = 0; line < 3; line++) rect(desk.x + 15, desk.y - 7 + line * 2, 2 + ((line + index) % 3), 1, lines[line])
+            } else rect(desk.x + 15, desk.y - 7, 2, 1, '#454b61')
+            rect(desk.x + 17, desk.y - 1, 2, 2, colors.metalDark)
+            rect(desk.x + 15, desk.y + 1, 6, 1, colors.metalDark)
+            rect(desk.x + 2, desk.y + 2, 8, 2, colors.metal)
+            rect(desk.x + 2, desk.y + 2, 8, 1, shade(colors.metal, 0.25))
+          }
           const mug = MUGS[hash(`${room.id}:desk:${index}`) % MUGS.length]
           rect(desk.x + 2, desk.y + 1, 2, 3, mug)
           rect(desk.x + 2, desk.y + 1, 2, 1, shade(mug, -0.25))

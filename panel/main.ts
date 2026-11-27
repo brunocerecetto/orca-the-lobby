@@ -34,7 +34,7 @@ import {
   timeRefreshBucket,
   viewActivityFocusKey
 } from './navigation'
-import { assignAgentNames, readAgentNames } from './names'
+import { assignAgentNames, coordinatorIds, readAgentNames } from './names'
 import { moveProject, orderProjects, projectGroups, taskLabel } from './work-map'
 import { chartLayout, needsAttention, hasAttention, attentionBranches, NODE_WIDTH, NODE_HEIGHT } from './chart'
 import { buildFamilyTree, syncFamilyExpansion, type FamilyNode } from './family'
@@ -2294,7 +2294,7 @@ async function acceptSnapshot(snapshot: OfficeSnapshot, refreshNotifications = f
   }
   office = { ...snapshot, journal: Array.isArray(snapshot.journal) ? snapshot.journal : [] }
   const previousNames = JSON.stringify([...agentNames])
-  agentNames = assignAgentNames(snapshot.agents.map((agent) => agent.id), agentNames)
+  agentNames = assignAgentNames(snapshot.agents.map((agent) => agent.id), agentNames, coordinatorIds(snapshot.agents))
   if (JSON.stringify([...agentNames]) !== previousNames)
     void orca.storage.set(AGENT_NAMES_KEY, Object.fromEntries(agentNames)).catch(() => {})
   renderFilters()

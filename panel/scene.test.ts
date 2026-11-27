@@ -1,12 +1,13 @@
 // `orca plugin test .` runs this in Node: the office's layout is plain arithmetic, no canvas.
 import { assert, test } from 'orca/testing'
 import type { AgentView, OfficeSnapshot } from '../src/protocol'
-import { assignAgentNames } from './names'
+import { BOSS_NAME, assignAgentNames } from './names'
 import {
   BUBBLE_MS,
   bubbleFor,
   bubbleHeight,
   decorationsFor,
+  doorBox,
   fitText,
   layout,
   lookOf,
@@ -149,6 +150,7 @@ test('anchors stable decor to wall or floor with bounds clear of fixtures and ag
     const again = layout(office(mixed), width, 2, new Map()).rooms[0]
     assert.deepEqual(room.decorations, again.decorations, `${width}px redraw preserves seeded decor`)
     assert.ok(room.decorations.length <= 4)
+    if (width >= 140) assert.ok(room.decorations.some((decor) => decor.name === 'painting'), `${width}px room hangs a painting`)
     const fixtureBounds = room.furniture.map((item) => ({
       left: item.left,
       right: item.right,
@@ -161,9 +163,10 @@ test('anchors stable decor to wall or floor with bounds clear of fixtures and ag
       const bounds = { left: decor.left, right: decor.left + decor.width, top: decor.top, bottom: decor.top + decor.height }
       assert.ok(bounds.left >= 0 && bounds.right <= width, `${width}px decoration stays in room`)
       assert.ok(bounds.top >= room.top + room.head && bounds.bottom <= room.floor)
-      if (['noticeboard', 'clock', 'poster'].includes(decor.name)) {
+      if (['noticeboard', 'clock', 'poster', 'painting'].includes(decor.name)) {
         assert.equal(decor.top, room.floor - 27, 'wall art shares a hanging line')
       } else assert.equal(bounds.bottom, room.floor, 'furniture rests on the floor')
+      assert.equal(overlaps(bounds, doorBox(room.floor)), false, `${width}px decor clears the door`)
       for (const fixture of fixtureBounds) assert.equal(overlaps(bounds, fixture), false, `${width}px decor clears wall fixture`)
       for (const other of room.decorations.slice(index + 1))
         assert.equal(overlaps(bounds, { left: other.left - 3, right: other.left + other.width + 3, top: other.top, bottom: other.top + other.height }), false)
@@ -481,4 +484,131 @@ test('people who arrive together walk in one behind the other, never on top of e
     step(actors, [room], 190, 10, 0.1, false)
   }
   assert.ok([...actors.values()].every((actor) => !actor.route.length), 'both reach the coffee corner')
+})
+
+test('the door stays clear of the window and coffee machine at every width', () => {
+  for (const width of [40, 48, 56, 64, 72, 80, 96, 140, 190, 320]) {
+    const door = doorBox(100)
+    const [web] = wallFurniture(width)
+    assert.ok(web.left >= door.right, `${width}px window clears the door`)
+  }
+})
+
+test('MR.Boss sits at his own spot below the worker rows and the workers keep their desks', () => {
+  for (const width of [96, 140, 190, 320]) {
+    const workers = Array.from({ length: 7 }, (_, index) => agent(`w-${index}`, 'working'))
+    const boss = agent('boss', 'working')
+    const names = new Map([[boss.id, BOSS_NAME]])
+    const without = layout(office(workers), width, 2, new Map(), names).rooms[0]
+    const withBoss = layout(office([...workers, boss]), width, 2, new Map(), names).rooms[0]
+    assert.equal(withBoss.desks.length, without.desks.length)
+    assert.deepEqual(withBoss.desks, without.desks)
+    assert.equal(withBoss.seated.length, 7)
+    assert.equal(withBoss.bossDesks.length, 1)
+    assert.equal(withBoss.bosses[0].id, 'boss')
+    const lastRow = Math.max(...withBoss.desks.map((desk) => desk.y))
+    const spot = withBoss.bossDesks[0]
+    assert.ok(spot.y - 9 > lastRow + 14, 'the boss desk clears the last worker row')
+    assert.ok(withBoss.bossRail !== null && withBoss.bossRail > lastRow + 14 && withBoss.bossRail < spot.y - 25, 'the partition is between')
+    assert.ok(spot.x >= 0 && spot.x + 22 <= width)
+    assert.ok(withBoss.height > without.height)
+    assert.ok(spot.y + 14 <= withBoss.top + withBoss.height)
+    const actors = new Map<string, Actor>()
+    step(actors, [withBoss], width, 100, 0, true)
+    assert.deepEqual({ x: actors.get('boss')!.goal.x, y: actors.get('boss')!.goal.y }, { x: spot.x + 8, y: spot.y + 5 })
+    assert.equal(actors.get('boss')!.seated, true)
+  }
+})
+
+test('without a boss the layout has no boss strip, and each boss gets a spot', () => {
+  const workers = Array.from({ length: 4 }, (_, index) => agent(`w-${index}`, 'working'))
+  const room = layout(office(workers), 190, 2, new Map(), new Map()).rooms[0]
+  assert.deepEqual(room.bossDesks, [])
+  assert.equal(room.bossRail, null)
+  const bosses = [agent('b1', 'working'), agent('b2', 'blocked'), agent('b3', 'done')]
+  const names = new Map(bosses.map((boss) => [boss.id, BOSS_NAME]))
+  const many = layout(office([...workers, ...bosses]), 190, 2, new Map(), names).rooms[0]
+  assert.equal(many.bossDesks.length, 2, 'a boss who finished goes for coffee instead')
+  const [a, b] = many.bossDesks
+  assert.ok(Math.abs(a.x - b.x) >= 22 || a.y !== b.y)
+})
+
+test('with motion an arrival starts at the door; without it, at its seat', () => {
+  const worker = agent('arrives', 'working')
+  const room = layout(office([worker]), 190, 2, new Map()).rooms[0]
+  const door = doorBox(room.floor)
+  const walking = new Map<string, Actor>()
+  step(walking, [room], 190, 10, 0, false)
+  const entered = walking.get('arrives')!
+  assert.ok(entered.x >= door.left && entered.x <= door.right && entered.y > room.floor, 'starts at the door')
+  assert.ok(entered.route.length > 0)
+  const placed = new Map<string, Actor>()
+  step(placed, [room], 190, 10, 0, true)
+  const seated = placed.get('arrives')!
+  assert.deepEqual({ x: seated.x, y: seated.y }, seated.goal)
+  assert.equal(seated.route.length, 0)
+})
+
+test('a departed agent walks to the door and goes; without motion it goes at once', () => {
+  const worker = agent('leaves', 'working')
+  const room = layout(office([worker]), 190, 2, new Map()).rooms[0]
+  const gone = layout(office([]), 190, 2, new Map()).rooms[0]
+  const walking = new Map<string, Actor>()
+  step(walking, [room], 190, 10, 0, true)
+  step(walking, [gone], 190, 20, 0.1, false)
+  const leaving = walking.get('leaves')!
+  assert.equal(leaving.leaving, true)
+  const door = doorBox(gone.floor)
+  assert.ok(leaving.entry.x >= door.left && leaving.entry.x <= door.right)
+  for (let tick = 0; tick < 200 && walking.size; tick++) step(walking, [gone], 190, 30, 0.1, false)
+  assert.equal(walking.size, 0, 'removed after reaching the door')
+
+  const still = new Map<string, Actor>()
+  step(still, [room], 190, 10, 0, true)
+  step(still, [gone], 190, 20, 0.1, true)
+  assert.equal(still.size, 0, 'no lingering ghost')
+})
+
+test('a pending question says Need you!, unread mail says Mail!, and need > failed > stuck > mail > done', () => {
+  const asking = { ...agent('q', 'working'), pendingQuestion: true, stateStartedAt: NOW - 1_000 }
+  assert.deepEqual(bubbleFor(asking, NOW, 20), { text: 'Need you!', tone: 'need', since: NOW - 1_000 })
+  const mailing = { ...agent('m', 'working'), unreadMail: 2, stateStartedAt: NOW - 2_000 }
+  assert.deepEqual(bubbleFor(mailing, NOW, 20), { text: 'Mail!', tone: 'mail', since: NOW - 2_000 })
+  assert.equal(bubbleFor({ ...mailing, unreadMail: 0 }, NOW, 20), null)
+  assert.equal(bubbleFor({ ...mailing, mailSince: NOW - 100 }, NOW, 20)?.since, NOW - 100, 'the newest mail times the bubble')
+  assert.equal(bubbleFor({ ...asking, questionSince: NOW - 50 }, NOW, 20)?.since, NOW - 50, 'the question times its bubble')
+  assert.equal(bubbleFor({ ...mailing, lastSeenAt: NOW - 21 * 60_000 }, NOW, 20)?.tone, 'stuck')
+  const doneWithMail = finished('d', { unreadMail: 1 })
+  assert.equal(bubbleFor(doneWithMail, NOW, 20)?.tone, 'mail')
+  assert.equal(bubbleFor({ ...doneWithMail, outcome: 'failure' }, NOW, 20)?.tone, 'failed')
+  assert.equal(bubbleFor({ ...doneWithMail, pendingQuestion: true, outcome: 'failure' }, NOW, 20)?.tone, 'need')
+})
+
+test('plants stand by the door, between desks and by the boss, clear of desks, seats, the door and walking paths', () => {
+  for (const width of [96, 140, 190, 320]) {
+    const workers = Array.from({ length: 6 }, (_, index) => agent(`w-${index}`, 'working'))
+    const boss = agent('boss', 'working')
+    const names = new Map([[boss.id, BOSS_NAME]])
+    const room = layout(office([...workers, boss]), width, 2, new Map(), names).rooms[0]
+    const plain = layout(office(workers), width, 2, new Map()).rooms[0]
+    const hit = (a: { left: number; top: number; width: number; height: number }, b: { left: number; right: number; top: number; bottom: number }): boolean =>
+      a.left < b.right && b.left < a.left + a.width && a.top < b.bottom && b.top < a.top + a.height
+    const door = doorBox(room.floor)
+    assert.ok(room.plants.length >= 2, `${width}px keeps its plants`)
+    for (const plant of room.plants) {
+      assert.equal(plant.name, 'plant')
+      assert.ok(plant.left >= 0 && plant.left + plant.width <= width)
+      assert.ok(!hit(plant, door), 'not over the door')
+      for (const desk of [...room.desks, ...room.bossDesks]) {
+        assert.ok(!hit(plant, { left: desk.x, right: desk.x + 22, top: desk.y - 9, bottom: desk.y + 14 }), 'not over a desk')
+        assert.ok(!hit(plant, { left: desk.x + 3, right: desk.x + 13, top: room.floor + 6, bottom: desk.y + 5 }), 'not on the way to a seat')
+      }
+      assert.ok(!hit(plant, { left: 0, right: width, top: room.floor + 6, bottom: room.floor + 30 }), 'not in the walking lane')
+      for (const other of room.plants) if (other !== plant) assert.ok(!hit(plant, { left: other.left, right: other.left + 8, top: other.top, bottom: other.top + 15 }))
+    }
+    const bossDesk = room.bossDesks[0]
+    assert.ok(room.plants.some((plant) => plant.top + 3 === bossDesk.y && Math.abs(plant.left - bossDesk.x) <= 36), 'one stands by the boss corner')
+    const lastRow = Math.max(...plain.desks.map((desk) => desk.y))
+    assert.ok(plain.plants.every((plant) => plant.top + 3 <= lastRow), 'without a boss no plant stands below the worker rows')
+  }
 })

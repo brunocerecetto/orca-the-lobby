@@ -16,6 +16,7 @@ import type {
   Today,
   Usage
 } from './protocol'
+import type { OrchestrationFacts } from './orchestration'
 import { addUsage, emptyUsage } from './usage'
 
 export type Office = {
@@ -26,6 +27,8 @@ export type Office = {
   projects: Map<string, string>
   /** Workspace path to the project it belongs to, once looked up. */
   roots: Map<string, string>
+  /** Paths of workspaces whose Orca project is hidden; in memory only, never stored. */
+  hidden: Set<string>
   /** By workspace path: what is uncommitted there, and what Orca has linked to it. */
   changes: Map<string, Change>
   links: Map<string, Link[]>
@@ -36,6 +39,8 @@ export type Office = {
   usage: { day: string; workspaces: Map<string, Usage> } | null
   /** Whether Orca's own list of agents is in: it then decides who is in the office. */
   rostered: boolean
+  /** Runtime-only orchestration facts by agent id; never stored. */
+  orchestration: Map<string, OrchestrationFacts>
   /** Each project's place in Orca's sidebar, by repo id and by path. */
   sidebar: Map<string, number>
   /** Set after the first successful live roster; reset on each worker start. */
@@ -112,12 +117,14 @@ export function createOffice(): Office {
     workspaces: new Map(),
     projects: new Map(),
     roots: new Map(),
+    hidden: new Set(),
     changes: new Map(),
     links: new Map(),
     can: { open: false },
     today: { day: '', finished: 0, failed: 0, blockedMs: 0 },
     usage: null,
     rostered: false,
+    orchestration: new Map(),
     sidebar: new Map(),
     attentionTracking: false,
     completionIdentities: new Map(),
@@ -269,6 +276,9 @@ function bounded<T extends OfficeSnapshot>(input: T, limit: number, compactAgent
 
 /** The state to store, with the oldest history dropped until it fits Orca's size limit. */
 export function storable(state: OfficeSnapshot, limit = STORE_BYTES): OfficeSnapshot {
+  if (state.agents.some((agent) => 'pendingQuestion' in agent || 'unreadMail' in agent || 'questionSince' in agent || 'mailSince' in agent)) {
+    return storable({ ...state, agents: state.agents.map(({ pendingQuestion: _question, questionSince: _asked, unreadMail: _mail, mailSince: _arrived, ...agent }) => agent) }, limit)
+  }
   const withoutUndefinedTurnIds = state.agents.some((agent) => agent.notificationTurnId === undefined)
     ? { ...state, agents: state.agents.map((agent) => {
         if (agent.notificationTurnId !== undefined) return agent
@@ -294,9 +304,26 @@ export function storable(state: OfficeSnapshot, limit = STORE_BYTES): OfficeSnap
   return bounded(compact, limit, true)
 }
 
-/** What the panel gets: everything but the history, which it does not show. */
-export function forPanel(state: OfficeSnapshot, reviewedCompletions: string[] = []): OfficeSnapshot {
-  const { completionIdentities: _completions, notificationEpisodes: _episodes, ...publicState } = state
+export type Hidden = { workspaces: ReadonlySet<string>; projects: ReadonlySet<string> }
+
+/** The hidden workspaces, and the projects (rooms) that have no visible workspace left. */
+export function hiddenView(office: Office): Hidden {
+  const root = (path: string): string => office.roots.get(path) ?? path
+  const shown = new Set([...office.workspaces.keys()].filter((path) => !office.hidden.has(path)).map(root))
+  return { workspaces: office.hidden, projects: new Set([...office.hidden].map(root).filter((project) => !shown.has(project))) }
+}
+
+const NOTHING_HIDDEN: Hidden = { workspaces: new Set(), projects: new Set() }
+
+/** What the panel gets: everything but the history, which it does not show, and what Orca hides. */
+export function forPanel(state: OfficeSnapshot, reviewedCompletions: string[] = [], hidden: Hidden = NOTHING_HIDDEN): OfficeSnapshot {
+  const { completionIdentities: _completions, notificationEpisodes: _episodes, ...fullState } = state
+  const publicState = hidden.workspaces.size === 0 ? fullState : {
+    ...fullState,
+    agents: fullState.agents.filter((agent) => !agent.workspaceId || !hidden.workspaces.has(agent.workspaceId)),
+    workspaces: Object.fromEntries(Object.entries(fullState.workspaces).filter(([path]) => !hidden.workspaces.has(path))),
+    projects: Object.fromEntries(Object.entries(fullState.projects).filter(([id]) => !hidden.projects.has(id)))
+  }
   return bounded({ ...publicState, agents: publicState.agents.map(({ notificationEpisodeId: _episode, notificationTransitionId: _transition, notificationTurnId: _turn, ...agent }) => ({ ...agent, sessionId: null })), journal: [], reviewedCompletions: reviewedCompletions.length ? reviewedCompletions : (state.reviewedCompletions ?? []) }, STORE_BYTES, false)
 }
 
@@ -968,8 +995,9 @@ export function snapshot(office: Office): OfficeSnapshot {
     completionIdentities: Object.fromEntries(office.completionIdentities),
     notificationEpisodes: Object.fromEntries(office.notificationEpisodes),
     agents: [...office.agents.values()].sort((a, b) => a.firstSeenAt - b.firstSeenAt).map((agent) => {
-      if (agent.notificationTurnId !== undefined) return agent
-      const { notificationTurnId: _turn, ...storedAgent } = agent
+      const live = { ...agent, ...office.orchestration.get(agent.id) }
+      if (agent.notificationTurnId !== undefined) return live
+      const { notificationTurnId: _turn, ...storedAgent } = live
       return storedAgent
     }),
     workspaces: Object.fromEntries(office.workspaces),
