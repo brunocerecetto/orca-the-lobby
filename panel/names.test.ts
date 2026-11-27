@@ -1,5 +1,6 @@
 import { assert, test } from 'orca/testing'
-import { assignAgentNames, readAgentNames } from './names'
+import type { AgentView } from '../src/protocol'
+import { assignAgentNames, BOSS_NAME, coordinatorIds, readAgentNames } from './names'
 
 test('keeps friendly names stable regardless of snapshot order', () => {
   const first = assignAgentNames(['agent-1', 'agent-2', 'agent-3'])
@@ -10,7 +11,7 @@ test('keeps friendly names stable regardless of snapshot order', () => {
 test('gives visible agents distinct friendly names', () => {
   const names = [...assignAgentNames(Array.from({ length: 50 }, (_, index) => `worker-${index}`)).values()]
   assert.equal(new Set(names).size, names.length)
-  assert.ok(names.every((name) => /^[A-Z][a-z]+$/.test(name)))
+  assert.ok(names.every((name) => /^\p{Lu}\p{Ll}+$/u.test(name)))
 })
 
 test('a colliding arrival before existing IDs does not rename them', () => {
@@ -41,4 +42,35 @@ test('reuses names across many generations without accumulating numeric suffixes
     assert.equal(new Set(names.values()).size, 50)
     assert.ok([...names.values()].every((name) => !/\d/.test(name)))
   }
+})
+
+const agentOf = (id: string, parentId: string | null = null, family: { id: string }[] = []): AgentView =>
+  ({ id, parentId, family: family.map((child) => ({ ...child, kind: 'agent' })) }) as unknown as AgentView
+
+test('a coordinator is a listed agent another listed agent reports as its parent, or lists as an agent child', () => {
+  const agents = [
+    agentOf('boss-a'),
+    agentOf('worker-a', 'boss-a'),
+    agentOf('boss-b', null, [{ id: 'worker-b' }]),
+    agentOf('worker-b'),
+    agentOf('lonely', null, [{ id: 'not-listed' }]),
+    agentOf('orphan', 'gone')
+  ]
+  assert.deepEqual([...coordinatorIds(agents)].sort(), ['boss-a', 'boss-b'])
+})
+
+test('every coordinator is MR.Boss and takes no slot from the friendly names', () => {
+  const ids = ['boss-a', 'boss-b', 'worker-1', 'worker-2']
+  const names = assignAgentNames(ids, new Map(), new Set(['boss-a', 'boss-b']))
+  assert.equal(names.get('boss-a'), BOSS_NAME)
+  assert.equal(names.get('boss-b'), BOSS_NAME)
+  assert.equal(BOSS_NAME, 'MR.Boss')
+  assert.notEqual(names.get('worker-1'), BOSS_NAME)
+  assert.deepEqual([...assignAgentNames(['worker-1', 'worker-2'])].filter(([id]) => id.startsWith('w')), [...names].filter(([id]) => id.startsWith('w')))
+})
+
+test('a stored MR.Boss for an agent that stopped coordinating gets a regular name', () => {
+  const names = assignAgentNames(['ex-boss'], new Map([['ex-boss', BOSS_NAME]]))
+  assert.notEqual(names.get('ex-boss'), BOSS_NAME)
+  assert.ok(names.get('ex-boss'))
 })
