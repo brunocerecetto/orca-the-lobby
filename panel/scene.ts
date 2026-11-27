@@ -854,7 +854,7 @@ function drawDecoration(rect: Rect, item: Decoration, colors: Palette, accent: s
   }
 }
 
-export type BubbleTone = 'need' | 'stuck' | 'failed' | 'done'
+export type BubbleTone = 'need' | 'stuck' | 'failed' | 'mail' | 'done'
 /** What one character says: `since` is when it started saying it. */
 export type Bubble = { text: string; tone: BubbleTone; since: number }
 export type PlacedBubble = Bubble & {
@@ -896,16 +896,17 @@ export function replyLine(reply: string | null): string {
   return ''
 }
 
-/** What an agent says over its head, if anything: needing you, then having gone quiet, then the
- *  start of its last reply for a short while after it finished. A person speaks once. */
+/** What an agent says over its head, if anything: needing you (blocked or with a question
+ *  unanswered), then a failure, having gone quiet, unread mail for a coordinator, and the start of its last reply for a short while after it finished. A person speaks once. */
 export function bubbleFor(agent: AgentView, now: number, stuckMinutes: number): Bubble | null {
-  if (agent.state === 'blocked') return { text: 'Need you!', tone: 'need', since: agent.stateStartedAt }
+  if (agent.state === 'blocked' || agent.pendingQuestion) return { text: 'Need you!', tone: 'need', since: agent.stateStartedAt }
   const late = overdue(agent, now, stuckMinutes)
-  if (late?.kind === 'quiet') return { text: 'Stuck?', tone: 'stuck', since: late.since + stuckMinutes * 60_000 }
-  if (agent.state !== 'done') return null
   const since = agent.finishedAt ?? agent.stateStartedAt
-  if (!(now - since < BUBBLE_MS && since - now < BUBBLE_MS)) return null
-  if (agent.outcome === 'failure') return { text: 'Failed', tone: 'failed', since }
+  const fresh = agent.state === 'done' && now - since < BUBBLE_MS && since - now < BUBBLE_MS
+  if (fresh && agent.outcome === 'failure') return { text: 'Failed', tone: 'failed', since }
+  if (late?.kind === 'quiet') return { text: 'Stuck?', tone: 'stuck', since: late.since + stuckMinutes * 60_000 }
+  if (agent.unreadMail) return { text: 'Mail!', tone: 'mail', since: agent.stateStartedAt }
+  if (!fresh) return null
   const text = replyLine(agent.reply)
   return text ? { text, tone: 'done', since } : null
 }
@@ -954,7 +955,7 @@ export function fitText(text: string, max: number, measure: (text: string) => nu
   return result
 }
 
-const BUBBLE_RANK: Record<BubbleTone, number> = { need: 0, stuck: 1, failed: 2, done: 3 }
+const BUBBLE_RANK: Record<BubbleTone, number> = { need: 0, failed: 1, stuck: 2, mail: 3, done: 4 }
 
 /** How tall a bubble is, in office pixels. */
 export const bubbleHeight = (scale: number): number => Math.ceil((BUBBLE_PX + 6) / scale)
@@ -1026,6 +1027,7 @@ function bubbleColors(tone: BubbleTone): { fill: string; text: string } {
   if (tone === 'need') return { fill: '#ed823b', text: INK }
   if (tone === 'stuck') return { fill: '#f6c9a0', text: INK }
   if (tone === 'failed') return { fill: '#c93a3f', text: '#ffffff' }
+  if (tone === 'mail') return { fill: '#9ec9f2', text: INK }
   return { fill: '#fffdf4', text: INK }
 }
 

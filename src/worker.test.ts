@@ -12,6 +12,8 @@ let listed: RosterWorktree[] | null = null
 cli.roster = async () => listed
 cli.changes = async () => ({ files: 2, added: 12, removed: 3 })
 cli.repos = async () => null
+let inbox: Awaited<ReturnType<typeof cli.inbox>> = null
+cli.inbox = async () => inbox
 // Terminals the pretend Orca has open, and what was typed or switched to in them.
 let terminals: { handle: string; paneKey: string }[] | null = []
 const typed: string[] = []
@@ -2413,4 +2415,27 @@ test('leaves out agents in a hidden Orca project, and a project.list that fails 
   const hidden = { projects: [{ id: 'p1', name: 'shop', kind: 'git', hostId: 'local', path: '/repos/shop', hidden: true }, { id: 'p2', name: 'blog', kind: 'git', hostId: 'local', path: '/repos/blog' }], truncated: false }
   assert.deepEqual(await run(hidden), ['pane-2'])
   assert.deepEqual(await run(null), ['pane-1', 'pane-2'])
+})
+
+test('the inbox marks a pending question and a boss with unread mail, and a failing inbox marks nothing', async () => {
+  listed = [{ path: '/orch', agents: [
+    { paneKey: 'boss-pane', state: 'working' },
+    { paneKey: 'w-pane', state: 'working', parentPaneKey: 'boss-pane' }
+  ] }]
+  const mail = (over: Record<string, unknown>) =>
+    ({ id: 'm1', type: 'status', to_handle: 'run:r1', thread_id: null, read: 0, sender_pane_key: 'w-pane', ...over })
+  inbox = [mail({ id: 'q1', type: 'question' }) as never, mail({ id: 'm2' }) as never]
+  const worker = await mountWorker(main, { host: mockHost() })
+  try {
+    await waitUntil('facts in the snapshot', async () => (await worker.request('office.snapshot')).agents.some((agent) => agent.pendingQuestion))
+    const agents = (await worker.request('office.snapshot')).agents
+    assert.equal(agents.find((agent) => agent.paneKey === 'w-pane')?.pendingQuestion, true)
+    assert.equal(agents.find((agent) => agent.paneKey === 'boss-pane')?.unreadMail, 2)
+    inbox = null
+    await waitUntil('facts cleared', async () => (await worker.request('office.snapshot')).agents.every((agent) => !agent.pendingQuestion && !agent.unreadMail))
+  } finally {
+    await worker.deactivate()
+    listed = null
+    inbox = null
+  }
 })

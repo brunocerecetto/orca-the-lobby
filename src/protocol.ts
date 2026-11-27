@@ -227,6 +227,10 @@ export type AgentView = {
   insight: Insight | null
   /** Context fill and tokens of its own session, when Orca's session record names the log; absent otherwise. */
   context?: AgentContext | null
+  /** Runtime only, from Orca's orchestration inbox: it asked a question nobody answered. */
+  pendingQuestion?: boolean
+  /** Runtime only: unread orchestration mail to the runs this coordinator launched. */
+  unreadMail?: number
   /** Each change of state in the last two hours, oldest first. */
   history: { state: AgentState; at: number }[]
 }

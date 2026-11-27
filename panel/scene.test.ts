@@ -569,3 +569,16 @@ test('a departed agent walks to the door and goes; without motion it goes at onc
   step(still, [gone], 190, 20, 0.1, true)
   assert.equal(still.size, 0, 'no lingering ghost')
 })
+
+test('a pending question says Need you!, unread mail says Mail!, and need > failed > stuck > mail > done', () => {
+  const asking = { ...agent('q', 'working'), pendingQuestion: true, stateStartedAt: NOW - 1_000 }
+  assert.deepEqual(bubbleFor(asking, NOW, 20), { text: 'Need you!', tone: 'need', since: NOW - 1_000 })
+  const mailing = { ...agent('m', 'working'), unreadMail: 2, stateStartedAt: NOW - 2_000 }
+  assert.deepEqual(bubbleFor(mailing, NOW, 20), { text: 'Mail!', tone: 'mail', since: NOW - 2_000 })
+  assert.equal(bubbleFor({ ...mailing, unreadMail: 0 }, NOW, 20), null)
+  assert.equal(bubbleFor({ ...mailing, lastSeenAt: NOW - 21 * 60_000 }, NOW, 20)?.tone, 'stuck')
+  const doneWithMail = finished('d', { unreadMail: 1 })
+  assert.equal(bubbleFor(doneWithMail, NOW, 20)?.tone, 'mail')
+  assert.equal(bubbleFor({ ...doneWithMail, outcome: 'failure' }, NOW, 20)?.tone, 'failed')
+  assert.equal(bubbleFor({ ...doneWithMail, pendingQuestion: true, outcome: 'failure' }, NOW, 20)?.tone, 'need')
+})

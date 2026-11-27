@@ -16,6 +16,7 @@ import type {
   Today,
   Usage
 } from './protocol'
+import type { OrchestrationFacts } from './orchestration'
 import { addUsage, emptyUsage } from './usage'
 
 export type Office = {
@@ -38,6 +39,8 @@ export type Office = {
   usage: { day: string; workspaces: Map<string, Usage> } | null
   /** Whether Orca's own list of agents is in: it then decides who is in the office. */
   rostered: boolean
+  /** Runtime-only orchestration facts by agent id; never stored. */
+  orchestration: Map<string, OrchestrationFacts>
   /** Each project's place in Orca's sidebar, by repo id and by path. */
   sidebar: Map<string, number>
   /** Set after the first successful live roster; reset on each worker start. */
@@ -121,6 +124,7 @@ export function createOffice(): Office {
     today: { day: '', finished: 0, failed: 0, blockedMs: 0 },
     usage: null,
     rostered: false,
+    orchestration: new Map(),
     sidebar: new Map(),
     attentionTracking: false,
     completionIdentities: new Map(),
@@ -272,6 +276,9 @@ function bounded<T extends OfficeSnapshot>(input: T, limit: number, compactAgent
 
 /** The state to store, with the oldest history dropped until it fits Orca's size limit. */
 export function storable(state: OfficeSnapshot, limit = STORE_BYTES): OfficeSnapshot {
+  if (state.agents.some((agent) => 'pendingQuestion' in agent || 'unreadMail' in agent)) {
+    return storable({ ...state, agents: state.agents.map(({ pendingQuestion: _question, unreadMail: _mail, ...agent }) => agent) }, limit)
+  }
   const withoutUndefinedTurnIds = state.agents.some((agent) => agent.notificationTurnId === undefined)
     ? { ...state, agents: state.agents.map((agent) => {
         if (agent.notificationTurnId !== undefined) return agent
@@ -988,8 +995,9 @@ export function snapshot(office: Office): OfficeSnapshot {
     completionIdentities: Object.fromEntries(office.completionIdentities),
     notificationEpisodes: Object.fromEntries(office.notificationEpisodes),
     agents: [...office.agents.values()].sort((a, b) => a.firstSeenAt - b.firstSeenAt).map((agent) => {
-      if (agent.notificationTurnId !== undefined) return agent
-      const { notificationTurnId: _turn, ...storedAgent } = agent
+      const live = { ...agent, ...office.orchestration.get(agent.id) }
+      if (agent.notificationTurnId !== undefined) return live
+      const { notificationTurnId: _turn, ...storedAgent } = live
       return storedAgent
     }),
     workspaces: Object.fromEntries(office.workspaces),

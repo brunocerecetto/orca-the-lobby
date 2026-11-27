@@ -59,6 +59,7 @@ import {
   type NotificationPolicy,
   type TransitionCandidate
 } from './notifications'
+import { orchestrationFacts } from './orchestration'
 import { cli, environmentTarget } from './roster'
 import { createReader } from './transcript'
 import { createUsageCounter, dayOf } from './usage'
@@ -163,7 +164,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   let listing = false
   let namedAt = 0
   const looked = new Set<string>()
-  let listed: { id: string; name: string; path: string; branch: string | null; hostId: string | null }[] = []
+  let listed: { id: string; name: string; path: string; branch: string | null; hostId: string | null; projectId?: string | null }[] = []
   let reviewed = new Set<string>()
   let storedReviews = readReviewed(null, Date.now())
   let reviewWrites: Promise<void> = Promise.resolve()
@@ -440,6 +441,10 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
     }
     else office.rostered = false
+    office.orchestration = orchestrationFacts(
+      await cli.inbox().catch(() => null),
+      [...office.agents.values()]
+    )
     await enrich().catch((error) => orca.log(`enrich: ${error}`))
     looking = false
     if (stopped) return
