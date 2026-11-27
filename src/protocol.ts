@@ -229,8 +229,12 @@ export type AgentView = {
   context?: AgentContext | null
   /** Runtime only, from Orca's orchestration inbox: it asked a question nobody answered. */
   pendingQuestion?: boolean
+  /** Runtime only: when (ms) the newest unanswered question was asked. */
+  questionSince?: number
   /** Runtime only: unread orchestration mail to the runs this coordinator launched. */
   unreadMail?: number
+  /** Runtime only: when (ms) the newest unread mail arrived. */
+  mailSince?: number
   /** Each change of state in the last two hours, oldest first. */
   history: { state: AgentState; at: number }[]
 }

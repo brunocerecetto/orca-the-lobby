@@ -59,7 +59,7 @@ import {
   type NotificationPolicy,
   type TransitionCandidate
 } from './notifications'
-import { orchestrationFacts } from './orchestration'
+import { hasCoordinator, orchestrationFacts } from './orchestration'
 import { cli, environmentTarget } from './roster'
 import { createReader } from './transcript'
 import { createUsageCounter, dayOf } from './usage'
@@ -417,7 +417,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     lookTimer = undefined
     looking = true
     lookedAt = Date.now()
-    const worktrees = await cli.roster().catch(() => null)
+    const inboxWanted = office.agents.size === 0 || hasCoordinator([...office.agents.values()])
+    const [worktrees, inbox] = await Promise.all([
+      cli.roster().catch(() => null),
+      inboxWanted ? cli.inbox().catch(() => null) : null
+    ])
     if (stopped) return
     if (worktrees) {
       rosterObserved = true
@@ -441,10 +445,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
     }
     else office.rostered = false
-    office.orchestration = orchestrationFacts(
-      await cli.inbox().catch(() => null),
-      [...office.agents.values()]
-    )
+    const listedAgents = [...office.agents.values()]
+    office.orchestration = hasCoordinator(listedAgents) ? orchestrationFacts(inbox, listedAgents) : new Map()
     await enrich().catch((error) => orca.log(`enrich: ${error}`))
     looking = false
     if (stopped) return

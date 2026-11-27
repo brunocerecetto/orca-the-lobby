@@ -276,8 +276,8 @@ function bounded<T extends OfficeSnapshot>(input: T, limit: number, compactAgent
 
 /** The state to store, with the oldest history dropped until it fits Orca's size limit. */
 export function storable(state: OfficeSnapshot, limit = STORE_BYTES): OfficeSnapshot {
-  if (state.agents.some((agent) => 'pendingQuestion' in agent || 'unreadMail' in agent)) {
-    return storable({ ...state, agents: state.agents.map(({ pendingQuestion: _question, unreadMail: _mail, ...agent }) => agent) }, limit)
+  if (state.agents.some((agent) => 'pendingQuestion' in agent || 'unreadMail' in agent || 'questionSince' in agent || 'mailSince' in agent)) {
+    return storable({ ...state, agents: state.agents.map(({ pendingQuestion: _question, questionSince: _asked, unreadMail: _mail, mailSince: _arrived, ...agent }) => agent) }, limit)
   }
   const withoutUndefinedTurnIds = state.agents.some((agent) => agent.notificationTurnId === undefined)
     ? { ...state, agents: state.agents.map((agent) => {

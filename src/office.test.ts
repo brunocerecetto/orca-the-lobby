@@ -996,18 +996,21 @@ test('the panel leaves out hidden workspaces, their agents and rooms with nothin
 
 test('hidden workspaces are never stored', () => {
   const office = createOffice()
+  applyRoster(office, [{ path: '/a/one', agents: [{ paneKey: 'p1', state: 'working' }] }], 1000)
   office.hidden = new Set(['/a/one'])
-  assert.ok(!JSON.stringify(storable(snapshot(office))).includes('/a/one'))
+  const stored = storable(snapshot(office))
+  assert.equal(stored.agents.length, 1)
+  assert.ok(!('hidden' in stored))
 })
 
 test('orchestration facts reach the panel but are never stored', () => {
   const office = createOffice()
   applyRoster(office, [{ path: '/a/one', agents: [{ paneKey: 'p1', state: 'working' }] }], 1000)
   const id = snapshot(office).agents[0].id
-  office.orchestration.set(id, { pendingQuestion: true, unreadMail: 2 })
+  office.orchestration.set(id, { pendingQuestion: true, questionSince: 5, unreadMail: 2, mailSince: 6 })
   const live = snapshot(office)
   assert.equal(forPanel(live).agents[0].pendingQuestion, true)
   assert.equal(forPanel(live).agents[0].unreadMail, 2)
   const stored = storable(live).agents[0]
-  assert.ok(!('pendingQuestion' in stored) && !('unreadMail' in stored))
+  assert.ok(!('pendingQuestion' in stored) && !('unreadMail' in stored) && !('questionSince' in stored) && !('mailSince' in stored))
 })
