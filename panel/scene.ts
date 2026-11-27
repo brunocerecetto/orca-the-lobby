@@ -40,6 +40,8 @@ export type Room = {
   seed: number
   furniture: WallFixture[]
   decorations: Decoration[]
+  /** Potted plants: by the door, by the boss corner and between desks; clear of every seat and walking route. */
+  plants: Decoration[]
 }
 
 export type Actor = Point &
@@ -213,19 +215,64 @@ const DECORATION_SPECS: Array<{ name: DecorationName; width: number; height: num
   { name: 'painting', width: 16, height: 12 }
 ]
 
-/** A few room-seeded accents in clear wall space; no decoration changes agent routing. */
-export function decorationsFor(width: number, floor: number, furniture: WallFixture[], seed: number): Decoration[] {
-  const gap = 3
-  const intersects = (a: { left: number; right: number; top: number; bottom: number }, b: { left: number; right: number; top: number; bottom: number }): boolean =>
-    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+type Box = { left: number; right: number; top: number; bottom: number }
+const intersect = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+
+/** The door and the wall fixtures as boxes on the wall; `besideDoor` keeps that much of the wall next to the door free. */
+const wallBoxes = (floor: number, furniture: WallFixture[], besideDoor = 0): Box[] => {
   const frame = doorBox(floor)
-  const door = { left: frame.left - 2, right: frame.right + 2, top: frame.top - 1, bottom: frame.bottom }
-  const fixtures = [door, ...furniture.map((item) => ({
+  return [{ left: frame.left - 2, right: frame.right + 2 + besideDoor, top: frame.top - 1, bottom: frame.bottom }, ...furniture.map((item) => ({
     left: item.left,
     right: item.right,
     top: floor + (item.name === 'web' ? -29 : -21),
     bottom: floor + (item.name === 'web' ? -7 : 0)
   }))]
+}
+
+const PLANT = { name: 'plant', width: 8, height: 15 } as const
+
+/** Plants by the door, by the first boss desk and in the gaps between desks of a row, never over a desk,
+ *  a seat, the door, a wall fixture or the paths people walk (`routeTo`). */
+export function plantsFor(width: number, floor: number, desks: Point[], bossDesks: Point[], furniture: WallFixture[], decorations: Decoration[], seed: number): Decoration[] {
+  const box = (item: Decoration, gap = 0): Box => ({ left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height })
+  const spots = [...desks, ...bossDesks]
+  const blocked: Box[] = [
+    ...wallBoxes(floor, furniture),
+    ...decorations.map((item) => box(item, 2)),
+    { left: 0, right: width, top: floor + 6, bottom: floor + 30 },
+    { left: DOOR.left, right: DOOR.left + DOOR.width, top: floor, bottom: floor + 30 },
+    ...spots.flatMap((desk) => [
+      { left: desk.x, right: desk.x + DESK_W, top: desk.y - 9, bottom: desk.y + 14 },
+      { left: desk.x + 3, right: desk.x + 13, top: floor + 6, bottom: desk.y + 5 }
+    ])
+  ]
+  const placed: Decoration[] = []
+  const tryPlace = (left: number, top: number): void => {
+    const plant: Decoration = { ...PLANT, left, top }
+    if (left < 0 || left + PLANT.width > width || blocked.some((other) => intersect(box(plant), other))) return
+    placed.push(plant)
+    blocked.push(box(plant, 1))
+  }
+  const doorRight = doorBox(floor).right
+  for (let left = doorRight + 3; left <= doorRight + 12 && !placed.length; left++) tryPlace(left, floor - PLANT.height)
+  const firstBoss = bossDesks[0]
+  if (firstBoss) {
+    const rowEnd = Math.max(...bossDesks.filter((desk) => desk.y === firstBoss.y).map((desk) => desk.x))
+    const before = placed.length
+    for (const left of [firstBoss.x - 10, rowEnd + DESK_W + 2]) if (placed.length === before) tryPlace(left, firstBoss.y - 3)
+  }
+  desks
+    .flatMap((desk, index) => desks[index + 1]?.y === desk.y ? [{ left: desk.x + DESK_W + 2, top: desk.y - 3, index }] : [])
+    .sort((a, b) => hash(`${seed}:plant:${a.index}`) - hash(`${seed}:plant:${b.index}`))
+    .slice(0, 2)
+    .forEach(({ left, top }) => tryPlace(left, top))
+  return placed
+}
+
+/** A few room-seeded accents in clear wall space; no decoration changes agent routing. */
+export function decorationsFor(width: number, floor: number, furniture: WallFixture[], seed: number): Decoration[] {
+  const gap = 3
+  const fixtures = wallBoxes(floor, furniture, PLANT.width + 3)
   // The painting always hangs first, so the room keeps it whatever the seed picks after.
   const ordered = [...DECORATION_SPECS].sort(
     (a, b) => Number(b.name === 'painting') - Number(a.name === 'painting') || hash(`${seed}:kind:${a.name}`) - hash(`${seed}:kind:${b.name}`)
@@ -243,8 +290,8 @@ export function decorationsFor(width: number, floor: number, furniture: WallFixt
       })
     const left = candidates.find((candidate) => {
       const bounds = { left: candidate, right: candidate + spec.width, top, bottom: top + spec.height }
-      return !fixtures.some((fixture) => intersects(bounds, fixture)) &&
-        !placed.some((item) => intersects(bounds, { left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height }))
+      return !fixtures.some((fixture) => intersect(bounds, fixture)) &&
+        !placed.some((item) => intersect(bounds, { left: item.left - gap, right: item.left + item.width + gap, top: item.top, bottom: item.top + item.height }))
     })
     if (left !== undefined) placed.push({ ...spec, left, top })
   }
@@ -441,6 +488,7 @@ export function layout(
     const seed = hash(id || 'lobby')
     const labels = agents.map((agent) => displayNames?.get(agent.id) ?? agentName(snap, agent))
     const decorations = decorationsFor(width, floor, furniture, seed)
+    const plants = plantsFor(width, floor, desks, bossDesks, furniture, decorations, seed)
     rooms.push({
       id,
       name: nameOf(id),
@@ -458,7 +506,8 @@ export function layout(
       desks,
       seed,
       furniture,
-      decorations
+      decorations,
+      plants
     })
     top += height + GAP
   }
@@ -899,13 +948,14 @@ export function replyLine(reply: string | null): string {
 /** What an agent says over its head, if anything: needing you (blocked or with a question
  *  unanswered), then a failure, having gone quiet, unread mail for a coordinator, and the start of its last reply for a short while after it finished. A person speaks once. */
 export function bubbleFor(agent: AgentView, now: number, stuckMinutes: number): Bubble | null {
-  if (agent.state === 'blocked' || agent.pendingQuestion) return { text: 'Need you!', tone: 'need', since: agent.stateStartedAt }
+  if (agent.state === 'blocked') return { text: 'Need you!', tone: 'need', since: agent.stateStartedAt }
+  if (agent.pendingQuestion) return { text: 'Need you!', tone: 'need', since: agent.questionSince ?? agent.stateStartedAt }
   const late = overdue(agent, now, stuckMinutes)
   const since = agent.finishedAt ?? agent.stateStartedAt
   const fresh = agent.state === 'done' && now - since < BUBBLE_MS && since - now < BUBBLE_MS
   if (fresh && agent.outcome === 'failure') return { text: 'Failed', tone: 'failed', since }
   if (late?.kind === 'quiet') return { text: 'Stuck?', tone: 'stuck', since: late.since + stuckMinutes * 60_000 }
-  if (agent.unreadMail) return { text: 'Mail!', tone: 'mail', since: agent.stateStartedAt }
+  if (agent.unreadMail) return { text: 'Mail!', tone: 'mail', since: agent.mailSince ?? agent.stateStartedAt }
   if (!fresh) return null
   const text = replyLine(agent.reply)
   return text ? { text, tone: 'done', since } : null
@@ -1242,7 +1292,7 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
     ctx.restore()
 
     // Small seeded wall accents, placed only in bounds clear of the window and coffee corner.
-    for (const decoration of room.decorations) drawDecoration(rect, decoration, colors, theme.accent)
+    for (const decoration of [...room.decorations, ...room.plants]) drawDecoration(rect, decoration, colors, theme.accent)
 
     // The door agents come in and leave by; it stands ajar while someone is at it.
     const door = doorBox(floor)

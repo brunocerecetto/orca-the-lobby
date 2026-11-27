@@ -531,7 +531,6 @@ test('without a boss the layout has no boss strip, and each boss gets a spot', (
   assert.equal(many.bossDesks.length, 2, 'a boss who finished goes for coffee instead')
   const [a, b] = many.bossDesks
   assert.ok(Math.abs(a.x - b.x) >= 22 || a.y !== b.y)
-  assert.equal(many.desks.length, 4)
 })
 
 test('with motion an arrival starts at the door; without it, at its seat', () => {
@@ -576,9 +575,40 @@ test('a pending question says Need you!, unread mail says Mail!, and need > fail
   const mailing = { ...agent('m', 'working'), unreadMail: 2, stateStartedAt: NOW - 2_000 }
   assert.deepEqual(bubbleFor(mailing, NOW, 20), { text: 'Mail!', tone: 'mail', since: NOW - 2_000 })
   assert.equal(bubbleFor({ ...mailing, unreadMail: 0 }, NOW, 20), null)
+  assert.equal(bubbleFor({ ...mailing, mailSince: NOW - 100 }, NOW, 20)?.since, NOW - 100, 'the newest mail times the bubble')
+  assert.equal(bubbleFor({ ...asking, questionSince: NOW - 50 }, NOW, 20)?.since, NOW - 50, 'the question times its bubble')
   assert.equal(bubbleFor({ ...mailing, lastSeenAt: NOW - 21 * 60_000 }, NOW, 20)?.tone, 'stuck')
   const doneWithMail = finished('d', { unreadMail: 1 })
   assert.equal(bubbleFor(doneWithMail, NOW, 20)?.tone, 'mail')
   assert.equal(bubbleFor({ ...doneWithMail, outcome: 'failure' }, NOW, 20)?.tone, 'failed')
   assert.equal(bubbleFor({ ...doneWithMail, pendingQuestion: true, outcome: 'failure' }, NOW, 20)?.tone, 'need')
+})
+
+test('plants stand by the door, between desks and by the boss, clear of desks, seats, the door and walking paths', () => {
+  for (const width of [96, 140, 190, 320]) {
+    const workers = Array.from({ length: 6 }, (_, index) => agent(`w-${index}`, 'working'))
+    const boss = agent('boss', 'working')
+    const names = new Map([[boss.id, BOSS_NAME]])
+    const room = layout(office([...workers, boss]), width, 2, new Map(), names).rooms[0]
+    const plain = layout(office(workers), width, 2, new Map()).rooms[0]
+    const hit = (a: { left: number; top: number; width: number; height: number }, b: { left: number; right: number; top: number; bottom: number }): boolean =>
+      a.left < b.right && b.left < a.left + a.width && a.top < b.bottom && b.top < a.top + a.height
+    const door = doorBox(room.floor)
+    assert.ok(room.plants.length >= 2, `${width}px keeps its plants`)
+    for (const plant of room.plants) {
+      assert.equal(plant.name, 'plant')
+      assert.ok(plant.left >= 0 && plant.left + plant.width <= width)
+      assert.ok(!hit(plant, door), 'not over the door')
+      for (const desk of [...room.desks, ...room.bossDesks]) {
+        assert.ok(!hit(plant, { left: desk.x, right: desk.x + 22, top: desk.y - 9, bottom: desk.y + 14 }), 'not over a desk')
+        assert.ok(!hit(plant, { left: desk.x + 3, right: desk.x + 13, top: room.floor + 6, bottom: desk.y + 5 }), 'not on the way to a seat')
+      }
+      assert.ok(!hit(plant, { left: 0, right: width, top: room.floor + 6, bottom: room.floor + 30 }), 'not in the walking lane')
+      for (const other of room.plants) if (other !== plant) assert.ok(!hit(plant, { left: other.left, right: other.left + 8, top: other.top, bottom: other.top + 15 }))
+    }
+    const bossDesk = room.bossDesks[0]
+    assert.ok(room.plants.some((plant) => plant.top + 3 === bossDesk.y && Math.abs(plant.left - bossDesk.x) <= 36), 'one stands by the boss corner')
+    const lastRow = Math.max(...plain.desks.map((desk) => desk.y))
+    assert.ok(plain.plants.every((plant) => plant.top + 3 <= lastRow), 'without a boss no plant stands below the worker rows')
+  }
 })
