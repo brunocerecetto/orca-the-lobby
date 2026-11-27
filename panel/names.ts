@@ -3,11 +3,13 @@ import type { AgentView } from '../src/protocol'
 export const BOSS_NAME = 'MR.Boss'
 
 const FRIENDLY_NAMES = [
-  'Alejandro', 'Beatriz', 'Carlos', 'Daniela', 'Emiliano', 'Fernanda', 'Gael', 'Hugo', 'Ximena', 'Jorge',
-  'Karla', 'Luis', 'Mariana', 'Nicolás', 'Octavio', 'Paola', 'Rodrigo', 'Sofía', 'Tomás', 'Valeria',
-  'Xóchitl', 'Yolanda', 'Zoe', 'Andrés', 'Brenda', 'César', 'Diego', 'Elena', 'Francisco', 'Guadalupe',
-  'Héctor', 'Isabel', 'Javier', 'Lupita', 'Miguel', 'Natalia', 'Óscar', 'Patricia', 'Ricardo', 'Sergio',
-  'Tania', 'Ulises', 'Verónica', 'Adriana', 'Bruno', 'Camila', 'Dante', 'Esperanza', 'Fabián', 'Gloria'
+  'José Guadalupe', 'Juan Pablo', 'Cuauhtémoc', 'Jesús', 'José Luis', 'Pancho', 'Guadalupe', 'Moctezuma',
+  'Chuy', 'José María', 'Xóchitl', 'Socorro', 'Lupita', 'Itzel', 'Citlali', 'Quetzalcóatl',
+  'Emiliano', 'Maximiliano', 'Santiago', 'Alejandro', 'Berenice', 'Esmeralda', 'María Fernanda', 'Frida',
+  'Yolanda', 'Genoveva', 'Carmelita', 'Juan Carlos', 'Rigoberto', 'Margarito', 'Ezequiel', 'Rogelio',
+  'Armando', 'Octavio', 'Valentín', 'Hilario', 'Brayan', 'Kevin', 'Brandon', 'Yahir',
+  'Fernanda', 'Nayeli', 'Tonantzin', 'Marisol', 'Alejandra', 'Fátima', 'Consuelo', 'Dolores',
+  'Ernesto', 'Genaro'
 ]
 
 const hash = (text: string): number => {

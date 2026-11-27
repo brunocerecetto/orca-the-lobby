@@ -11,7 +11,7 @@ test('keeps friendly names stable regardless of snapshot order', () => {
 test('gives visible agents distinct friendly names', () => {
   const names = [...assignAgentNames(Array.from({ length: 50 }, (_, index) => `worker-${index}`)).values()]
   assert.equal(new Set(names).size, names.length)
-  assert.ok(names.every((name) => /^\p{Lu}\p{Ll}+$/u.test(name)))
+  assert.ok(names.every((name) => /^\p{Lu}\p{L}*( \p{Lu}\p{L}*)*$/u.test(name)))
 })
 
 test('a colliding arrival before existing IDs does not rename them', () => {
@@ -73,4 +73,13 @@ test('a stored MR.Boss for an agent that stopped coordinating gets a regular nam
   const names = assignAgentNames(['ex-boss'], new Map([['ex-boss', BOSS_NAME]]))
   assert.notEqual(names.get('ex-boss'), BOSS_NAME)
   assert.ok(names.get('ex-boss'))
+})
+
+test('past the 50 names the suffix keeps names with spaces distinct and stable', () => {
+  const ids = Array.from({ length: 53 }, (_, index) => `worker-${index}`)
+  const first = assignAgentNames(ids)
+  assert.equal(new Set(first.values()).size, 53)
+  assert.ok([...first.values()].some((name) => /^\D+ \d+$/.test(name)))
+  const again = assignAgentNames(ids, readAgentNames(Object.fromEntries(first)))
+  assert.deepEqual([...again], [...first])
 })
