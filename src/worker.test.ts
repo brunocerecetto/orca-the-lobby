@@ -14,6 +14,7 @@ cli.changes = async () => ({ files: 2, added: 12, removed: 3 })
 cli.repos = async () => null
 let inbox: Awaited<ReturnType<typeof cli.inbox>> = null
 cli.inbox = async () => inbox
+cli.workers = async () => null
 // Terminals the pretend Orca has open, and what was typed or switched to in them.
 let terminals: { handle: string; paneKey: string }[] | null = []
 const typed: string[] = []
@@ -2017,9 +2018,11 @@ test('retry keeps a completion created by an observed working-to-done transition
   const worker = await mountWorker(main, { host })
   try {
     await waitUntil('working roster during office read failure', async () => (await worker.request('office.snapshot')).agents[0]?.state === 'working')
+    const doneAt = Date.now() + 1
+    listed = [{ path: '/transition', agents: [{ paneKey: 'transition-pane', state: 'done', stateStartedAt: doneAt, mainAgent: { outcome: 'failure' } }] }]
     await worker.emit('agent.status.changed', {
-      workspaceId: '/transition', paneKey: 'transition-pane', state: 'done', receivedAt: now + 1,
-      mainAgent: { state: 'done', outcome: 'failure', stateStartedAt: now + 1 }, turnId: 'fresh-turn'
+      workspaceId: '/transition', paneKey: 'transition-pane', state: 'done', receivedAt: doneAt,
+      mainAgent: { state: 'done', outcome: 'failure', stateStartedAt: doneAt }, turnId: 'fresh-turn'
     } as never)
     const freshId = (await worker.request('office.snapshot')).agents[0].completionId!
     assert.notEqual(freshId, priorId)

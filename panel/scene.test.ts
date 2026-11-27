@@ -8,6 +8,8 @@ import {
   bubbleHeight,
   decorationsFor,
   doorBox,
+  draw,
+  palette,
   fitText,
   layout,
   lookOf,
@@ -610,5 +612,48 @@ test('plants stand by the door, between desks and by the boss, clear of desks, s
     assert.ok(room.plants.some((plant) => plant.top + 3 === bossDesk.y && Math.abs(plant.left - bossDesk.x) <= 36), 'one stands by the boss corner')
     const lastRow = Math.max(...plain.desks.map((desk) => desk.y))
     assert.ok(plain.plants.every((plant) => plant.top + 3 <= lastRow), 'without a boss no plant stands below the worker rows')
+  }
+})
+
+test('every name sits on a plate that contrasts with it, stays inside its seat pitch and never overlaps a neighbour', () => {
+  for (const dark of [false, true]) {
+    const colors = palette(dark)
+    const long = ['María Fernanda', 'José Guadalupe', 'Quetzalcóatl', 'Juan Carlos', 'Kevin', 'Itzel']
+    const agents = long.map((name, index) => agent(`w${index}`, 'working'))
+    const names = new Map(agents.map((worker, index) => [worker.id, long[index]]))
+    const { rooms } = layout(office(agents), 190, 2, new Map(), names)
+    const actors = new Map<string, Actor>()
+    step(actors, rooms, 190, 100, 0, true)
+    let style = ''
+    let font = 0
+    const plates: Array<{ x: number; y: number; w: number; h: number }> = []
+    const texts: Array<{ text: string; x: number; y: number }> = []
+    const stub = new Proxy({} as Record<string, unknown>, {
+      get: (target, key: string) => {
+        if (key === 'measureText') return (text: string) => ({ width: text.length * font * 0.6 })
+        if (key === 'fillRect') return (x: number, y: number, w: number, h: number) => { if (style === colors.plate) plates.push({ x, y, w, h }) }
+        if (key === 'fillText') return (text: string, x: number, y: number) => texts.push({ text, x, y })
+        return target[key] ?? (() => undefined)
+      },
+      set: (target, key: string, value: unknown) => {
+        if (key === 'fillStyle') style = String(value)
+        if (key === 'font') font = Number(/(\d+(?:\.\d+)?)px/.exec(String(value))?.[1])
+        target[key] = value
+        return true
+      }
+    }) as unknown as CanvasRenderingContext2D
+    draw(stub, { width: 190, rooms, actors, beat: 1, period: dark ? 'night' : 'day', scale: 2, colors, theme: { card: '#fff', text: '#000', muted: '#888', border: '#444', accent: '#4f8fe6' }, selected: null, hovered: null })
+    const named = texts.filter((item) => long.some((name) => name.startsWith(item.text.replace('…', ''))))
+    assert.equal(named.length, long.length)
+    assert.equal(plates.length, long.length)
+    for (const plate of plates) assert.ok(plate.w <= 34)
+    for (const [index, plate] of plates.entries())
+      for (const other of plates.slice(index + 1))
+        if (Math.abs(plate.y - other.y) < plate.h) assert.ok(plate.x + plate.w <= other.x || other.x + other.w <= plate.x)
+    const luminance = (color: string): number => {
+      const channels = (color.startsWith('#') ? [1, 3, 5].map((at) => parseInt(color.slice(at, at + 2), 16)) : (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number))
+      return (0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]) / 255
+    }
+    assert.ok(Math.abs(luminance(colors.plate) - luminance(colors.name)) > 0.6)
   }
 })

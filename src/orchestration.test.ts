@@ -1,8 +1,8 @@
 import { assert, test } from 'orca/testing'
-import { hasCoordinator, orchestrationFacts, parseInbox, type InboxRow } from './orchestration'
+import { hasCoordinator, orchestrationFacts, parseInbox, parseWorkers, type InboxRow } from './orchestration'
 
 const row = (id: string, over: Partial<InboxRow> = {}): InboxRow =>
-  ({ id, type: 'status', to_handle: 'run:r1', run_id: 'r1', created_at: null, thread_id: null, read: 1, sender_pane_key: 'w-pane', ...over })
+  ({ id, type: 'status', to_handle: 'run:r1', run_id: 'r1', created_at: null, thread_id: null, read: 1, sender_pane_key: 'w-pane', from_handle: null, payload: null, ...over })
 const agents = [
   { id: 'boss', paneKey: 'b-pane', parentId: null },
   { id: 'worker', paneKey: 'w-pane', parentId: 'boss' }
@@ -73,4 +73,55 @@ test('parseInbox reads result.messages and refuses anything else', () => {
   assert.equal(parseInbox(null), null)
   assert.equal(parseInbox(JSON.stringify({ ok: false, result: { messages: [] } })), null)
   assert.equal(parseInbox(JSON.stringify({ ok: true, result: {} })), null)
+})
+
+const realQuestion = row('msg_2ab40a4d3d4e', {
+  type: 'question', from_handle: 'dispatch:ctx_0595dfee792f', to_handle: 'run:run_a3a445a10c4e', run_id: 'run_a3a445a10c4e',
+  thread_id: 'msg_2ab40a4d3d4e', sender_pane_key: null,
+  payload: '{"taskId":"task_ee8edd1c795b","dispatchId":"ctx_0595dfee792f","question":"?"}'
+})
+const realReply = row('msg_70b94baf5bc1', {
+  type: 'status', from_handle: 'run:run_a3a445a10c4e', to_handle: 'dispatch:ctx_0595dfee792f', run_id: 'run_a3a445a10c4e',
+  thread_id: 'msg_2ab40a4d3d4e', sender_pane_key: null
+})
+const workerAgents = [
+  { id: 'boss', paneKey: 'b-pane', parentId: null },
+  { id: 'worker', paneKey: '4ec47959:6943cd08', parentId: null, terminalId: null }
+]
+const links = {
+  workers: [{ dispatchId: 'ctx_0595dfee792f', terminal: 'term_0503c162' }],
+  terminals: [{ handle: 'term_0503c162', paneKey: '4ec47959:6943cd08' }]
+}
+
+test('a question whose thread_id is its own id is pending until another row answers it', () => {
+  assert.equal(orchestrationFacts([realQuestion], workerAgents, links).get('worker')?.pendingQuestion, true)
+  assert.equal(orchestrationFacts([realQuestion, realReply], workerAgents, links).get('worker')?.pendingQuestion, undefined)
+})
+
+test('a question sent from a dispatch resolves to the worker through the worker list', () => {
+  assert.equal(orchestrationFacts([realQuestion], workerAgents, links).get('worker')?.pendingQuestion, true)
+  assert.equal(orchestrationFacts([realQuestion], workerAgents, { ...links, workers: [] }).size, 0)
+  assert.equal(orchestrationFacts([realQuestion], workerAgents).size, 0)
+})
+
+test('mail from a worker terminal resolves by its handle', () => {
+  const done = row('msg_73d4f9eb9d3e', { type: 'worker_done', from_handle: 'term_0503c162', read: 0, sender_pane_key: null })
+  const orphans = [{ id: 'boss', paneKey: 'b-pane', parentId: null }, { id: 'worker', paneKey: '4ec47959:6943cd08', parentId: 'boss' }]
+  assert.equal(orchestrationFacts([done], orphans, links).get('boss')?.unreadMail, 1)
+  const direct = [orphans[0], { ...orphans[1], paneKey: 'other', terminalId: 'term_0503c162' }]
+  assert.equal(orchestrationFacts([done], direct, { workers: [], terminals: [{ handle: 'term_0503c162', paneKey: 'x' }] }).get('boss')?.unreadMail, 1)
+})
+
+test('a reply from the run is not a coordinator pane; the pane key still names the coordinator', () => {
+  const unread = row('a', { read: 0, run_id: 'run_a3a445a10c4e', from_handle: 'term_0503c162', sender_pane_key: null })
+  const orphans = [{ id: 'boss', paneKey: 'b-pane', parentId: null }, { id: 'worker', paneKey: '4ec47959:6943cd08', parentId: null }]
+  assert.equal(orchestrationFacts([unread, realReply], orphans, links).size, 0)
+  const sent = { ...realReply, sender_pane_key: 'b-pane', from_handle: 'term_boss' }
+  assert.equal(orchestrationFacts([unread, sent], orphans, links).get('boss')?.unreadMail, 1)
+})
+
+test('parseWorkers reads dispatchId and terminal, and refuses anything else', () => {
+  const ok = JSON.stringify({ result: { workers: [{ dispatchId: 'd', terminal: 't', x: 1 }, { dispatchId: 'e' }, null] } })
+  assert.deepEqual(parseWorkers(ok), [{ dispatchId: 'd', terminal: 't' }])
+  for (const bad of [null, 'nope', '{}']) assert.equal(parseWorkers(bad), null)
 })

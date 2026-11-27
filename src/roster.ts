@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { listArgs, parseOutcome, parseTerminals, sendArgs, switchArgs, type TerminalRow } from './actions'
 import type { RosterWorktree } from './office'
-import { parseInbox, type InboxRow } from './orchestration'
+import { parseInbox, parseWorkers, type InboxRow, type WorkerRow } from './orchestration'
 import type { Change } from './protocol'
 
 const ENVIRONMENT_PREFIX = 'environment:'
@@ -152,6 +152,9 @@ export const cli = {
   /** Orchestration mail, read-only (`check` would mark it read); null when Orca cannot be asked. */
   inbox: async (): Promise<InboxRow[] | null> =>
     parseInbox(await ask(['orchestration', 'inbox', '--json', '--full', '--limit', '200'])),
+  /** The workers Orca's runs dispatched, read-only; null when Orca cannot be asked. */
+  workers: async (): Promise<WorkerRow[] | null> =>
+    parseWorkers(await ask(['orchestration', 'worker-list', '--json'])),
   /** The live terminals Orca manages, or null when Orca cannot be asked. */
   terminals: async (environment?: string): Promise<TerminalRow[] | null> =>
     parseTerminals(await ask([...listArgs, ...environmentArgs(environment)])),
