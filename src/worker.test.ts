@@ -2386,3 +2386,31 @@ test('the shortcuts start from the selected agent and keep one order for a whole
     }
   }
 })
+
+test('leaves out agents in a hidden Orca project, and a project.list that fails hides nothing', async () => {
+  const row = (id: string, path: string, projectId: string) =>
+    ({ id, kind: 'worktree', name: id, path, branch: 'main', hostId: null, projectId })
+  const results = (projects: unknown) => ({
+    'workspace.list': { workspaces: [row('w1', '/repos/shop', 'p1'), row('w2', '/repos/blog', 'p2')], truncated: false },
+    ...(projects ? { 'project.list': projects } : {})
+  })
+  const run = async (projects: unknown): Promise<string[]> => {
+    const worker = await mountWorker(main, { host: mockHost({ results: results(projects) as never }) })
+    try {
+      for (const [paneKey, path] of [['pane-1', '/repos/shop'], ['pane-2', '/repos/blog']])
+        await worker.emit('agent.status.changed', { workspaceId: `x::${path}`, paneKey, terminalId: paneKey, title: paneKey, state: 'working', receivedAt: Date.now() })
+      let ids: string[] = []
+      await waitUntil('workspaces named', async () => {
+        const state = await worker.request('office.snapshot')
+        ids = state.agents.map((agent) => agent.id).sort()
+        return Object.keys(state.workspaces).length > 0 && (projects === null || ids.length < 2)
+      })
+      return ids
+    } finally {
+      await worker.deactivate()
+    }
+  }
+  const hidden = { projects: [{ id: 'p1', name: 'shop', kind: 'git', hostId: 'local', path: '/repos/shop', hidden: true }, { id: 'p2', name: 'blog', kind: 'git', hostId: 'local', path: '/repos/blog' }], truncated: false }
+  assert.deepEqual(await run(hidden), ['pane-2'])
+  assert.deepEqual(await run(null), ['pane-1', 'pane-2'])
+})

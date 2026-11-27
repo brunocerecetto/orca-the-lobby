@@ -22,6 +22,7 @@ import {
   snapshot,
   storable,
   forPanel,
+  hiddenView,
   STORE_BYTES,
   jsonBytes
 } from './office'
@@ -96,6 +97,8 @@ const LOOK_IDLE_MS = 20000
 const CHANGES_MS = 15000
 /** How often Orca's sidebar order is read, so a project dragged there moves here too. */
 const REPOS_MS = 10000
+/** How often the workspace and hidden-project lists are read again. */
+const HIDDEN_MS = 10000
 /** How often today's tokens are counted from the agents' logs. */
 const USAGE_MS = 30000
 /** Presses of the previous / next shortcuts closer together than this walk one fixed order. */
@@ -158,6 +161,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
   office.can = { open: granted('workspace:write') }
   let listing = false
+  let namedAt = 0
   const looked = new Set<string>()
   let listed: { id: string; name: string; path: string; branch: string | null; hostId: string | null }[] = []
   let reviewed = new Set<string>()
@@ -364,7 +368,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     prune(office, Date.now())
     let state
     try {
-      state = forPanel(snapshot(office), [...reviewed].sort())
+      state = forPanel(snapshot(office), [...reviewed].sort(), hiddenView(office))
     } catch (error) {
       orca.log(`office.update: ${error}`)
       saveTimer ??= setTimeout(save, SAVE_MS)
@@ -479,6 +483,11 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (fresh) agent.insight = fresh
     }
     readContext(agents)
+    if (Date.now() - namedAt >= HIDDEN_MS) {
+      namedAt = Date.now()
+      await nameWorkspaces()
+      if (stopped) return
+    }
     if (Date.now() - reposAt >= REPOS_MS) {
       reposAt = Date.now()
       const repos = await cli.repos().catch(() => null)
@@ -633,6 +642,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     try {
       listed = (await orca.host.call('workspace.list')).workspaces
       if (stopped) return
+      const hiddenProjects = await orca.host.call('project.list')
+        .then(({ projects }) => new Set(projects.filter((project) => project.hidden).map((project) => project.id)))
+        .catch(() => new Set<string>())
+      if (stopped) return
+      office.hidden = new Set(listed.filter((row) => row.projectId && hiddenProjects.has(row.projectId)).map((row) => row.path))
       for (const { name, path, branch, hostId } of listed) {
         office.workspaces.set(path, name)
         for (const agent of office.agents.values()) {
@@ -720,7 +734,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     changed()
   })
 
-  orca.panels.handle('office.snapshot', () => forPanel(snapshot(office), [...reviewed].sort()))
+  orca.panels.handle('office.snapshot', () => forPanel(snapshot(office), [...reviewed].sort(), hiddenView(office)))
 
   const controlFailure = (): NotificationControlState => ({
     status: notificationStatus.status,

@@ -26,6 +26,8 @@ export type Office = {
   projects: Map<string, string>
   /** Workspace path to the project it belongs to, once looked up. */
   roots: Map<string, string>
+  /** Paths of workspaces whose Orca project is hidden; in memory only, never stored. */
+  hidden: Set<string>
   /** By workspace path: what is uncommitted there, and what Orca has linked to it. */
   changes: Map<string, Change>
   links: Map<string, Link[]>
@@ -112,6 +114,7 @@ export function createOffice(): Office {
     workspaces: new Map(),
     projects: new Map(),
     roots: new Map(),
+    hidden: new Set(),
     changes: new Map(),
     links: new Map(),
     can: { open: false },
@@ -294,9 +297,26 @@ export function storable(state: OfficeSnapshot, limit = STORE_BYTES): OfficeSnap
   return bounded(compact, limit, true)
 }
 
-/** What the panel gets: everything but the history, which it does not show. */
-export function forPanel(state: OfficeSnapshot, reviewedCompletions: string[] = []): OfficeSnapshot {
-  const { completionIdentities: _completions, notificationEpisodes: _episodes, ...publicState } = state
+export type Hidden = { workspaces: ReadonlySet<string>; projects: ReadonlySet<string> }
+
+/** The hidden workspaces, and the projects (rooms) that have no visible workspace left. */
+export function hiddenView(office: Office): Hidden {
+  const root = (path: string): string => office.roots.get(path) ?? path
+  const shown = new Set([...office.workspaces.keys()].filter((path) => !office.hidden.has(path)).map(root))
+  return { workspaces: office.hidden, projects: new Set([...office.hidden].map(root).filter((project) => !shown.has(project))) }
+}
+
+const NOTHING_HIDDEN: Hidden = { workspaces: new Set(), projects: new Set() }
+
+/** What the panel gets: everything but the history, which it does not show, and what Orca hides. */
+export function forPanel(state: OfficeSnapshot, reviewedCompletions: string[] = [], hidden: Hidden = NOTHING_HIDDEN): OfficeSnapshot {
+  const { completionIdentities: _completions, notificationEpisodes: _episodes, ...fullState } = state
+  const publicState = hidden.workspaces.size === 0 ? fullState : {
+    ...fullState,
+    agents: fullState.agents.filter((agent) => !agent.workspaceId || !hidden.workspaces.has(agent.workspaceId)),
+    workspaces: Object.fromEntries(Object.entries(fullState.workspaces).filter(([path]) => !hidden.workspaces.has(path))),
+    projects: Object.fromEntries(Object.entries(fullState.projects).filter(([id]) => !hidden.projects.has(id)))
+  }
   return bounded({ ...publicState, agents: publicState.agents.map(({ notificationEpisodeId: _episode, notificationTransitionId: _transition, notificationTurnId: _turn, ...agent }) => ({ ...agent, sessionId: null })), journal: [], reviewedCompletions: reviewedCompletions.length ? reviewedCompletions : (state.reviewedCompletions ?? []) }, STORE_BYTES, false)
 }
 
