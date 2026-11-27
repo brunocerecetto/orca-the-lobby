@@ -89,7 +89,8 @@ const NIGHT = {
   skyTop: '#182042',
   skyLow: '#27306a',
   shadow: 'rgba(0, 0, 0, 0.28)',
-  name: 'rgba(255, 255, 255, 0.72)'
+  name: '#ffffff',
+  plate: 'rgba(14, 17, 28, 0.86)'
 }
 const DAY: Palette = {
   flavor: 'orca',
@@ -110,7 +111,8 @@ const DAY: Palette = {
   skyTop: '#7fc2f3',
   skyLow: '#bfe3fb',
   shadow: 'rgba(60, 40, 20, 0.2)',
-  name: 'rgba(40, 30, 20, 0.7)'
+  name: '#1f2328',
+  plate: 'rgba(255, 252, 246, 0.92)'
 }
 export const palette = (dark: boolean): Palette => (dark ? NIGHT : DAY)
 
@@ -137,8 +139,7 @@ export function paletteFor(choice: PaletteChoice, appDark: boolean): Palette {
     metalDark: tokens.border,
     frame: tokens.border,
     skyTop: dark ? '#242b43' : '#acd6f4',
-    skyLow: dark ? '#3c4a67' : '#d9efff',
-    name: dark ? 'rgba(255,255,255,0.78)' : 'rgba(31,35,40,0.76)'
+    skyLow: dark ? '#3c4a67' : '#d9efff'
   }
 }
 
@@ -150,7 +151,7 @@ const PITCH = 34
 const GAP = 6
 /** Text is sized in screen pixels, whatever the office's scale. */
 const SIGN_PX = 12
-const NAME_PX = 10
+const NAME_PX = 11
 const RADIUS = 5
 /** Speech bubbles: the text is sized in screen pixels like the other text. */
 const BUBBLE_PX = 10
@@ -455,7 +456,7 @@ export function layout(
         : 'Office'
 
   const head = Math.ceil((SIGN_PX + 10) / scale)
-  const label = Math.ceil((NAME_PX + 3) / scale)
+  const label = Math.ceil((NAME_PX + 5) / scale)
   const rooms: Room[] = []
   let top = 0
   const place = (id: string): number => (order.includes(id) ? order.indexOf(id) : order.length)
@@ -1396,10 +1397,21 @@ export function draw(ctx: CanvasRenderingContext2D, view: View): PlacedBubble[] 
       })
       const index = room.agents.findIndex((agent) => agent.id === actor.agentId)
       over.push(() => {
-        ctx.font = `500 ${(actor.pose === 'cup' ? NAME_PX - 1 : NAME_PX) / scale}px system-ui, sans-serif`
-        const label = fit(room.labels[index] ?? '', actor.pose === 'cup' ? 18 : PITCH - 2)
-        ctx.fillStyle = marked ? theme.accent : colors.name
-        ctx.fillText(label, actor.x - ctx.measureText(label).width / 2, actor.y + 7)
+        const px = (actor.pose === 'cup' ? NAME_PX - 1 : NAME_PX) / scale
+        const pad = 1 / scale
+        ctx.font = `700 ${px}px system-ui, sans-serif`
+        const label = fit(room.labels[index] ?? '', (actor.pose === 'cup' ? 18 : PITCH - 1) - 2 * pad)
+        const width = ctx.measureText(label).width
+        const x = actor.x - width / 2
+        const baseline = actor.y + 7
+        if (marked) {
+          ctx.fillStyle = theme.accent
+          ctx.fillRect(x - 2 * pad, baseline - px * 0.8 - 2 * pad, width + 4 * pad, px + 4 * pad)
+        }
+        ctx.fillStyle = colors.plate
+        ctx.fillRect(x - pad, baseline - px * 0.8 - pad, width + 2 * pad, px + 2 * pad)
+        ctx.fillStyle = colors.name
+        ctx.fillText(label, x, baseline)
       })
       if (actor.activity && !spoken.some((item) => item.agentId === actor.agentId)) {
         const kind = actor.activity
